@@ -19,6 +19,7 @@ interface StoreSchema {
   version: string;
 }
 
+let storeInstance: MellowtelStore | null = null;
 export class MellowtelStore extends EventEmitter {
   private store: Store<StoreSchema>;
 
@@ -83,7 +84,12 @@ export class MellowtelStore extends EventEmitter {
     // Set up watchers for key state changes
     this.setupWatchers();
   }
-
+  static getInstance(): MellowtelStore {
+    if (!storeInstance) {
+      storeInstance = new MellowtelStore();
+    }
+    return storeInstance;
+  }
   private setupWatchers() {
     this.store.onDidChange('isOptedIn', (newValue, oldValue) => {
         if (typeof newValue === 'boolean' && newValue !== oldValue) {

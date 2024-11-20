@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Mellowtel Opt-in</title>
+  <style>
+    :root {
+      --primary-color: #2563eb;
+      --primary-text: #ffffff;
+      --background: #ffffff;
+      --text: #1f2937;
+    }
+    
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      margin: 0;
+      padding: 2rem;
+      color: var(--text);
+      background: var(--background);
+    }
+    
+    .container {
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 2rem;
+    }
+    
+    h1 {
+      font-size: 2rem;
+      font-weight: bold;
+      margin-bottom: 1.5rem;
+    }
+    
+    .info-text {
+      font-size: 1rem;
+      line-height: 1.5;
+      margin-bottom: 2rem;
+    }
+    
+    .diagram {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 1rem;
+      margin: 2rem 0;
+    }
+    
+    .diagram-item {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+    }
+    
+    .circle-icon {
+      width: 48px;
+      height: 48px;
+      border-radius: 50%;
+      background: var(--primary-color);
+      color: var(--primary-text);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 0.5rem;
+    }
+    
+    .icon-label {
+      font-size: 0.875rem;
+      max-width: 80px;
+      text-align: center;
+    }
+    
+    .actions {
+      display: flex;
+      gap: 1rem;
+      justify-content: center;
+      margin: 2rem 0;
+      max-width: 400px;
+      margin: 2rem auto;
+    }
+    
+    button {
+      flex: 1;
+      padding: 1rem;
+      border-radius: 0.375rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    
+    .btn-decline {
+      background: transparent;
+      border: 1px solid var(--primary-color);
+      color: var(--primary-color);
+    }
+    
+    .btn-accept {
+      background: var(--primary-color);
+      border: 1px solid var(--primary-color);
+      color: var(--primary-text);
+    }
+    
+    .privacy-link {
+      text-align: center;
+      margin-top: 2rem;
+    }
+    
+    .privacy-link a {
+      color: var(--primary-color);
+      text-decoration: none;
+      font-size: 0.875rem;
+    }
+    
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    
+    .status-message {
+      text-align: center;
+      margin-top: 1rem;
+      font-weight: 500;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Share Unused Bandwidth</h1>
+    
+    <div class="info-text">
+      <p>Help keep this app free by sharing your unused bandwidth with Mellowtel to enable access to public websites.</p>
+      <p>It shares internet bandwidth only. No personal information is collected.</p>
+      <p>Your participation is totally optional. You can opt-in or out at any moment from the settings page.</p>
+    </div>
+
+    <div class="diagram">
+      <div class="diagram-item">
+        <div class="circle-icon">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+          </svg>
+        </div>
+        <div class="icon-label">Secure cloud</div>
+      </div>
+      
+      <div class="diagram-item">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+          <path d="M4 12h16M4 12l4-4m-4 4l4 4"/>
+        </svg>
+      </div>
+
+      <div class="diagram-item">
+        <div class="circle-icon">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="5" y="2" width="14" height="20" rx="2" ry="2"/>
+            <path d="M12 18h.01"/>
+          </svg>
+        </div>
+        <div class="icon-label">Your device</div>
+      </div>
+
+      <div class="diagram-item">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+          <path d="M4 12h16M4 12l4-4m-4 4l4 4"/>
+        </svg>
+      </div>
+
+      <div class="diagram-item">
+        <div class="circle-icon">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10"/>
+            <path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+          </svg>
+        </div>
+        <div class="icon-label">Public website</div>
+      </div>
+    </div>
+
+    <div class="actions">
+      <button class="btn-decline" id="decline-btn">No thanks</button>
+      <button class="btn-accept" id="accept-btn">Yes, I'll help</button>
+    </div>
+
+    <div class="privacy-link">
+      <a href="https://www.mellowtel.com/mellowtel-privacy-policy/" target="_blank">
+        Read our Privacy Policy and End User License Agreement
+      </a>
+    </div>
+
+    <div class="status-message" id="status-message"></div>
+  </div>
+<!-- Previous HTML remains the same until the script section -->
+<script>
+  let hasOptedIn = false;
+  let isProcessing = false;
+
+  // Check initial opt-in status when page loads
+  window.onload = async () => {
+    try {
+      const state = await window.mellowtel.getState();
+      hasOptedIn = state.isOptedIn;
+      updateUI(hasOptedIn);
+
+      // Get connection status to show current state
+      const connStatus = await window.mellowtel.getConnectionStatus();
+      updateConnectionStatus(connStatus.status);
+    } catch (error) {
+      console.error('Error initializing:', error);
+    }
+
+    // Listen for status changes
+    window.mellowtel.on('mellowtel:connection-status', updateConnectionStatus);
+    window.mellowtel.on('mellowtel:opt-in-status', updateUI);
+  };
+
+  function updateConnectionStatus(status) {
+    const statusMessage = document.getElementById('status-message');
+    if (status === 'connected') {
+      statusMessage.textContent += ' (Connected)';
+    }
+  }
+
+  function updateUI(isOptedIn) {
+    const statusMessage = document.getElementById('status-message');
+    const acceptBtn = document.getElementById('accept-btn');
+    const declineBtn = document.getElementById('decline-btn');
+    
+    if (isOptedIn) {
+      statusMessage.textContent = 'You are currently opted in';
+      acceptBtn.disabled = true;
+      declineBtn.disabled = false;
+    } else {
+      statusMessage.textContent = 'You are currently opted out';
+      acceptBtn.disabled = false;
+      declineBtn.disabled = true;
+    }
+  }
+
+  async function handleOptAction(optIn) {
+    if (isProcessing) return;
+    isProcessing = true;
+    
+    try {
+      await window.mellowtel.updateSettings({ isOptedIn: optIn });
+      
+      if (optIn) {
+        await window.mellowtel.wsConnect();
+      } else {
+        await window.mellowtel.wsDisconnect();
+      }
+
+      // Send analytics
+      await window.mellowtel.sendAnalytics({
+        type: 'opt_action',
+        action: optIn ? 'opt_in' : 'opt_out',
+        timestamp: Date.now()
+      });
+
+      // Close window after a short delay to show status
+      setTimeout(() => window.mellowtel.on('mellowtel:close-window'), 500);
+    } catch (error) {
+      console.error('Error during opt action:', error);
+      const statusMessage = document.getElementById('status-message');
+      statusMessage.textContent = `Error: ${error.message}`;
+    } finally {
+      isProcessing = false;
+    }
+  }
+
+  // Handle button clicks
+  document.getElementById('accept-btn').addEventListener('click', () => handleOptAction(true));
+  document.getElementById('decline-btn').addEventListener('click', () => handleOptAction(false));
+
+  // Error handling
+  window.onerror = function(message, source, lineno, colno, error) {
+    window.mellowtel.sendAnalytics({
+      type: 'error',
+      message: message,
+      source: source,
+      lineno: lineno,
+      colno: colno,
+      error: error?.toString()
+    });
+  };
+</script>
+</body>
+</html>

@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Mellowtel Settings</title>
+  <style>
+    :root {
+      --primary-color: #2563eb;
+      --primary-text: #ffffff;
+      --background: #ffffff;
+      --text: #1f2937;
+      --border: #e5e7eb;
+      --success: #22c55e;
+      --error: #ef4444;
+    }
+    
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      margin: 0;
+      padding: 2rem;
+      color: var(--text);
+      background: var(--background);
+    }
+    
+    .container {
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 2rem;
+    }
+    
+    h1 {
+      font-size: 2rem;
+      font-weight: bold;
+      margin-bottom: 1.5rem;
+    }
+
+    .settings-section {
+      border: 1px solid var(--border);
+      border-radius: 0.5rem;
+      padding: 1.5rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .settings-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 1rem;
+    }
+
+    .settings-title {
+      font-size: 1.25rem;
+      font-weight: 600;
+    }
+
+    .settings-status {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.875rem;
+    }
+
+    .status-indicator {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+    }
+
+    .status-connected {
+      background-color: var(--success);
+    }
+
+    .status-disconnected {
+      background-color: var(--error);
+    }
+
+    .settings-content {
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+
+    .settings-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 1rem 0;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .settings-row:last-child {
+      border-bottom: none;
+    }
+
+    .settings-info {
+      flex: 1;
+    }
+
+    .settings-label {
+      font-weight: 500;
+      margin-bottom: 0.25rem;
+    }
+
+    .settings-description {
+      font-size: 0.875rem;
+      color: #6b7280;
+    }
+
+    .toggle-switch {
+      position: relative;
+      display: inline-block;
+      width: 48px;
+      height: 24px;
+    }
+
+    .toggle-switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+
+    .toggle-slider {
+      position: absolute;
+      cursor: pointer;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background-color: #cbd5e1;
+      transition: .4s;
+      border-radius: 24px;
+    }
+
+    .toggle-slider:before {
+      position: absolute;
+      content: "";
+      height: 20px;
+      width: 20px;
+      left: 2px;
+      bottom: 2px;
+      background-color: white;
+      transition: .4s;
+      border-radius: 50%;
+    }
+
+    input:checked + .toggle-slider {
+      background-color: var(--primary-color);
+    }
+
+    input:checked + .toggle-slider:before {
+      transform: translateX(24px);
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .stat-card {
+      background: #f8fafc;
+      padding: 1rem;
+      border-radius: 0.5rem;
+      text-align: center;
+    }
+
+    .stat-value {
+      font-size: 1.5rem;
+      font-weight: bold;
+      margin-bottom: 0.5rem;
+    }
+
+    .stat-label {
+      font-size: 0.875rem;
+      color: #6b7280;
+    }
+
+    .system-info {
+      font-size: 0.75rem;
+      color: #6b7280;
+      text-align: center;
+      margin-top: 2rem;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .loading {
+      display: inline-block;
+      width: 16px;
+      height: 16px;
+      border: 2px solid #f3f3f3;
+      border-top: 2px solid var(--primary-color);
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+      margin-right: 0.5rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Mellowtel Settings</h1>
+
+    <div class="stats">
+      <div class="stat-card">
+        <div class="stat-value" id="requestsCount">-</div>
+        <div class="stat-label">Requests Today</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value" id="connectionUptime">-</div>
+        <div class="stat-label">Connection Uptime</div>
+      </div>
+    </div>
+
+    <div class="settings-section">
+      <div class="settings-header">
+        <div class="settings-title">Connection Status</div>
+        <div class="settings-status">
+          <div id="connectionIndicator" class="status-indicator"></div>
+          <span id="connectionStatus">Checking...</span>
+        </div>
+      </div>
+
+      <div class="settings-content">
+        <div class="settings-row">
+          <div class="settings-info">
+            <div class="settings-label">Bandwidth Sharing</div>
+            <div class="settings-description">Share unused bandwidth to help keep the app free</div>
+          </div>
+          <label class="toggle-switch">
+            <input type="checkbox" id="optInToggle">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+
+        <div class="settings-row">
+          <div class="settings-info">
+            <div class="settings-label">Node ID</div>
+            <div class="settings-description" id="nodeId">Loading...</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="system-info">
+      <div id="systemInfo">Loading system information...</div>
+      <div>Version: <span id="version">-</span></div>
+    </div>
+  </div>
+
+  <script>
+    let isProcessing = false;
+
+    async function updateStats() {
+      try {
+        const rateLimit = await window.mellowtel.getRateLimit();
+        document.getElementById('requestsCount').textContent = rateLimit.count.toLocaleString();
+      } catch (error) {
+        console.error('Error updating stats:', error);
+      }
+    }
+
+    async function updateConnectionStatus() {
+      try {
+        const status = await window.mellowtel.getConnectionStatus();
+        const indicator = document.getElementById('connectionIndicator');
+        const statusText = document.getElementById('connectionStatus');
+
+        indicator.className = 'status-indicator ' + 
+          (status.status === 'connected' ? 'status-connected' : 'status-disconnected');
+        statusText.textContent = status.status.charAt(0).toUpperCase() + status.status.slice(1);
+      } catch (error) {
+        console.error('Error updating connection status:', error);
+      }
+    }
+
+    async function initializeSettings() {
+      try {
+        // Get and update state
+        const state = await window.mellowtel.getState();
+        document.getElementById('optInToggle').checked = state.isOptedIn;
+        document.getElementById('nodeId').textContent = state.nodeId;
+
+        // Get and update system info
+        const systemInfo = await window.mellowtel.getSystemInfo();
+        document.getElementById('systemInfo').textContent = 
+          `${systemInfo.platform} (${systemInfo.arch})`;
+        document.getElementById('version').textContent = systemInfo.version;
+
+        // Update stats and status
+        await updateStats();
+        await updateConnectionStatus();
+
+        // Set up event listeners
+        window.mellowtel.on('mellowtel:connection-status', (status) => {
+          updateConnectionStatus();
+        });
+
+        window.mellowtel.on('mellowtel:rate-limit', () => {
+          updateStats();
+        });
+      } catch (error) {
+        console.error('Error initializing settings:', error);
+      }
+    }
+
+    // Handle opt-in toggle
+    document.getElementById('optInToggle').addEventListener('change', async (event) => {
+      if (isProcessing) {
+        event.preventDefault();
+        return;
+      }
+
+      isProcessing = true;
+      const isOptedIn = event.target.checked;
+
+      try {
+        await window.mellowtel.updateSettings({ isOptedIn });
+        
+        if (isOptedIn) {
+          await window.mellowtel.wsConnect();
+        } else {
+          await window.mellowtel.wsDisconnect();
+        }
+
+        await window.mellowtel.sendAnalytics({
+          type: 'opt_action',
+          action: isOptedIn ? 'opt_in' : 'opt_out',
+          source: 'settings',
+          timestamp: Date.now()
+        });
+
+        await updateConnectionStatus();
+      } catch (error) {
+        console.error('Error updating opt-in status:', error);
+        event.target.checked = !isOptedIn;
+      } finally {
+        isProcessing = false;
+      }
+    });
+
+    // Initialize on load
+    window.addEventListener('load', initializeSettings);
+
+    // Set up periodic updates
+    setInterval(async () => {
+      await updateStats();
+      await updateConnectionStatus();
+    }, 30000); // Update every 30 seconds
+
+    // Error handling
+    window.onerror = function(message, source, lineno, colno, error) {
+      window.mellowtel.sendAnalytics({
+        type: 'error',
+        message: message,
+        source: source,
+        lineno: lineno,
+        colno: colno,
+        error: error?.toString()
+      });
+    };
+  </script>
+</body>
+</html>

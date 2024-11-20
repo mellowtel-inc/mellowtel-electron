@@ -1,16 +1,15 @@
-// src/index.ts
 import { app, BrowserWindow, ipcMain } from 'electron';
 import { MellowtelStore } from './store';
-import { MellowtelConfig, MellowtelState } from './types';
+import { MellowtelWebSocket } from './websocket';
 import { VERSION, DEFAULT_MAX_DAILY_RATE, IPC_CHANNELS } from './constants';
 import path from 'path';
-import { MellowtelWebSocket } from './websocket';
+import { getOrGenerateIdentifier } from './utils/identity-helper';
+import { Logger } from './utils/logger';
+import { RateLimiter } from './utils/rate-limit';
 
 export default class Mellowtel {
   private publishableKey: string;
   private options: any;
-  private disableLogs: boolean;
-  private MAX_DAILY_RATE: number;
   private store: MellowtelStore;
   private window: BrowserWindow | null = null;
   private wsClient: MellowtelWebSocket | null = null;
@@ -23,46 +22,40 @@ export default class Mellowtel {
 
     this.publishableKey = publishableKey;
     this.options = options || {};
-    this.disableLogs = options?.disableLogs !== undefined ? options.disableLogs : true;
-    this.MAX_DAILY_RATE = options?.MAX_DAILY_RATE || DEFAULT_MAX_DAILY_RATE;
-    this.store = new MellowtelStore();
+    Logger.setLogEnabled(!options?.disableLogs);
+    RateLimiter.setMaxDailyRate(options?.MAX_DAILY_RATE || DEFAULT_MAX_DAILY_RATE);
+    this.store = MellowtelStore.getInstance();
+    
+    this.setupIpcHandlers();
   }
 
-  private log(...args: any[]) {
-    if (!this.disableLogs) {
-      console.log('[Mellowtel]', ...args);
-    }
-  }
+  
+  private setupIpcHandlers() {
+    // System/State handlers
+    ipcMain.handle(IPC_CHANNELS.GET_STATE, () => this.store.getState());
+    ipcMain.handle(IPC_CHANNELS.GET_SYSTEM_INFO, () => ({
+      platform: process.platform,
+      version: app.getVersion(),
+      arch: process.arch
+    }));
 
-  private async setupWebSocket() {
-    const nodeId = await this.getNodeId();
-    this.wsClient = new MellowtelWebSocket(nodeId, this.publishableKey);
-
-    this.wsClient.on('connected', () => {
-      this.log('WebSocket connected');
-    });
-
-    this.wsClient.on('message', (data) => {
-      this.log('Received message:', data);
-      // Forward message to renderer if needed
-      if (this.window) {
-        this.window.webContents.send(IPC_CHANNELS.WS_MESSAGE, data);
+    // Connection/WebSocket handlers
+    ipcMain.handle(IPC_CHANNELS.GET_CONNECTION_STATUS, () => ({
+      status: this.wsClient?.isConnected() ? 'connected' : 'disconnected',
+      lastAttempt: Date.now()
+    }));
+    
+    ipcMain.handle(IPC_CHANNELS.WS_CONNECT, () => this.wsClient?.connect());
+    ipcMain.handle(IPC_CHANNELS.WS_DISCONNECT, () => this.wsClient?.disconnect());
+    ipcMain.handle(IPC_CHANNELS.WS_SEND, (_, message: any) => {
+      if (this.wsClient?.isConnected()) {
+        return this.wsClient.emit(message);
       }
+      throw new Error('WebSocket not connected');
     });
 
-    this.wsClient.on('batch', (data, config) => {
-      this.log('Batch received:', data, config);
-    });
-
-    this.wsClient.connect();
-  }
-
-  public async initBackground(autoStartIfOptedIn?: boolean, metadataId?: string): Promise<void> {
-    ipcMain.handle(IPC_CHANNELS.GET_STATE, () => {
-      return this.store.getState();
-    });
-
-    ipcMain.handle(IPC_CHANNELS.UPDATE_SETTINGS, async (_, settings: Partial<MellowtelState>) => {
+    // Settings/Opt-in handlers
+    ipcMain.handle(IPC_CHANNELS.UPDATE_SETTINGS, async (_, settings: any) => {
       this.store.setState(settings);
       if (settings.isOptedIn !== undefined) {
         if (settings.isOptedIn) {
@@ -73,6 +66,51 @@ export default class Mellowtel {
       }
     });
 
+    // Analytics/Error handlers
+    ipcMain.handle(IPC_CHANNELS.SEND_ANALYTICS, (_, data: any) => {
+      Logger.log('Analytics:', data);
+    });
+
+    ipcMain.handle(IPC_CHANNELS.ERROR, (_, error: Error) => {
+      Logger.error('Error:', error);
+    });
+
+    // Rate limiting
+    ipcMain.handle(IPC_CHANNELS.GET_RATE_LIMIT, () => this.store.getRateLimit());
+
+    // Window management
+    ipcMain.on(IPC_CHANNELS.CLOSE_WINDOW, () => {
+      if (this.window) {
+        this.window.close();
+        this.window = null;
+      }
+    });
+  }
+
+  private async setupWebSocket() {
+    const nodeId = await this.getNodeId();
+    this.wsClient = new MellowtelWebSocket(nodeId, this.publishableKey);
+
+    this.wsClient.on('connected', () => {
+      Logger.log('WebSocket connected');
+    });
+
+    this.wsClient.on('message', (data) => {
+      Logger.log('Received message:', data);
+      if (this.window) {
+        this.window.webContents.send(IPC_CHANNELS.WS_MESSAGE, data);
+      }
+    });
+
+    this.wsClient.on('batch', (data, config) => {
+      Logger.log('Batch received:', data, config);
+    });
+
+    this.wsClient.connect();
+  }
+
+  public async initBackground(autoStartIfOptedIn?: boolean, metadataId?: string): Promise<void> {
+    await getOrGenerateIdentifier(this.publishableKey);
     if (autoStartIfOptedIn !== false) {
       const optInStatus = await this.getOptInStatus();
       if (optInStatus) {
@@ -90,9 +128,8 @@ export default class Mellowtel {
     return this.nodeId;
   }
 
-  public async generateAndOpenOptInLink(): Promise<string> {
+  public async generateAndOpenOptInLink(): Promise<void> {
     const nodeId = await this.getNodeId();
-    const url = `https://mellowtel.com/opt-in?key=${this.publishableKey}&node_id=${nodeId}`;
     
     await app.whenReady();
     this.window = new BrowserWindow({
@@ -104,9 +141,10 @@ export default class Mellowtel {
         preload: path.join(__dirname, 'preload.js')
       }
     });
-
-    await this.window.loadURL(url);
-    return url;
+  
+    // Load local opt-in page instead of remote URL
+    await this.window.loadFile(path.join(__dirname, 'opt-in.html'));
+    
   }
 
   public async generateSettingsLink(): Promise<string> {
@@ -117,6 +155,31 @@ export default class Mellowtel {
   public async getOptInStatus(): Promise<boolean> {
     const state = this.store.getState();
     return state.isOptedIn || false;
+  }
+  public async openSettings(): Promise<void> {
+    await app.whenReady();
+    
+    // Only create new window if one doesn't exist
+    if (!this.window) {
+      this.window = new BrowserWindow({
+        width: 800,
+        height: 800,
+        webPreferences: {
+          nodeIntegration: false,
+          contextIsolation: true,
+          preload: path.join(__dirname, 'preload.js')
+        }
+      });
+  
+      this.window.on('closed', () => {
+        this.window = null;
+      });
+  
+      await this.window.loadFile(path.join(__dirname, 'settings.html'));
+    } else {
+      // Focus existing window
+      this.window.focus();
+    }
   }
 
   public async start(metadataId?: string): Promise<boolean> {

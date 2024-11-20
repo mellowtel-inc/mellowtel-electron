@@ -11,4 +11,16 @@ export const IPC_CHANNELS = {
   GET_STATE: 'mellowtel:get-state',
   UPDATE_SETTINGS: 'mellowtel:update-settings',
   WS_MESSAGE: 'mellowtel:ws-message',
+  GET_CONNECTION_STATUS: 'mellowtel:get-connection-status',
+  GET_SYSTEM_INFO: 'mellowtel:get-system-info',
+  GET_RATE_LIMIT: 'mellowtel:get-rate-limit',
+  WS_CONNECT: 'mellowtel:ws-connect',
+  WS_DISCONNECT: 'mellowtel:ws-disconnect',
+  WS_SEND: 'mellowtel:ws-send',
+  SEND_ANALYTICS: 'mellowtel:send-analytics',
+  ERROR: 'mellowtel:error',
+  CLOSE_WINDOW: 'mellowtel:close-window',
+  CONNECTION_STATUS: 'mellowtel:connection-status',
+  OPT_IN_STATUS: 'mellowtel:opt-in-status',
+  RATE_LIMIT: 'mellowtel:rate-limit'
 } as const;
