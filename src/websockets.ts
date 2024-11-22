@@ -5,7 +5,8 @@ import { Logger } from './logger/logger';
 import { setLocalStorage } from './storage/storage-helpers';
 import { getIdentifier } from './utils/identity-helpers';
 import { VERSION, REFRESH_INTERVAL } from './constants';
-import { scrapeUrl } from './utils/scraping-helpers'; // Import the scrapeUrl method
+import { getS3SignedUrls, scrapeUrl } from './utils/scraping-helpers'; // Import the scrapeUrl method
+import { putHTMLToSigned, putMarkdownToSigned, updateDynamo } from './utils/put-to-signed';
 
 const ws_url: string = "wss://7joy2r59rf.execute-api.us-east-1.amazonaws.com/production/";
 
@@ -39,8 +40,26 @@ export async function startConnectionWs(identifier: string): Promise<WebSocket> 
                 if (message.url) {
                     Logger.log(`[WebSocket]: Received URL to scrape - ${message.url}`);
                     const scrapedContent = await scrapeUrl(message.url);
-                    Logger.log(`[WebSocket]: Scraped content - ${scrapedContent}`);
+                    const { uploadURL_html, uploadURL_markDown } = await getS3SignedUrls(message.recordID);
+
+                    // Upload HTML
+
+                    await putHTMLToSigned(uploadURL_html, scrapedContent.html)
+                    await putMarkdownToSigned(uploadURL_markDown, scrapedContent.markdown);
+    
+                    Logger.log(`[WebSocket]: Scraped html - ${scrapedContent.html}`);
+                    Logger.log(`[WebSocket]: Scraped markdown - ${scrapedContent.markdown}`);
                     // Handle the scraped content (e.g., save it, send it back, etc.)
+
+                    await updateDynamo(
+                        message.recordID,
+                        message.url,
+                        message.htmlTransformer,
+                        message.orgId,
+                        "text_" + message.recordID + ".txt",
+                        "markDown_" + message.recordID + ".txt",
+                        "image_" + message.recordID + ".png",
+                    )
                 }
             } catch (error) {
                 Logger.error(`[WebSocket]: Error handling message - ${error}`);
