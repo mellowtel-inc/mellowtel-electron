@@ -4,7 +4,7 @@ const store = new Store();
 
 export function getLocalStorage(key: string, extract_key = false): Promise<any> {
   return new Promise((resolve) => {
-    const result = store.get(key);
+    const result = store.get(key) as Record<string, any>; // Explicitly typing result as an object
     if (extract_key) {
       resolve(result ? result[key] : null);
     } else {
