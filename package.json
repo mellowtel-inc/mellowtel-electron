@@ -3,8 +3,9 @@
   "version": "1.0.0",
   "main": "dist/main.js",
   "scripts": {
-    "start": "webpack && electron .",
-    "build": "webpack",
+    "start": "webpack --devtool source-map && electron .",
+    "build": "webpack --devtool source-map",
+    "debug": "webpack --devtool source-map && electron --inspect=5858 .",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],

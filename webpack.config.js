@@ -3,6 +3,7 @@ const path = require('path');
 module.exports = {
   entry: './src/main.ts',
   target: 'electron-main',
+  devtool: 'source-map',
   module: {
     rules: [
       {
