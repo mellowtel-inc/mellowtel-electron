@@ -27,6 +27,13 @@ export async function getOrGenerateIdentifier(configuration_key: string): Promis
   });
 }
 
+export function getIdentifier(): Promise<string> {
+  return new Promise((resolve)=>{
+    getLocalStorage("mllwtl_identifier").then((result) => {
+        resolve(result.mllwtl_identifier);
+   });
+  });
+}
 
 async function generateIdentifier(configuration_key: string, just_update_key: boolean = false, previous_identifier: string = ""): Promise<string> {
   return new Promise((resolve) => {

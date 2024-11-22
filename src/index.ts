@@ -2,6 +2,8 @@ import { getOrGenerateIdentifier } from "./utils/identity-helpers";
 import { Logger } from "./logger/logger";
 import { RateLimiter } from "./local-rate-limiting/rate-limiter";
 import { MAX_DAILY_RATE as DEFAULT_MAX_DAILY_RATE, VERSION } from "./constants";
+import { startConnectionWs } from "./websockets";
+import { ipcMain } from "electron";
 
 export default class MellowtelSDK {
   private publishableKey: string;
@@ -22,7 +24,10 @@ export default class MellowtelSDK {
     if (!this.publishableKey) {
       throw new Error("publishableKey is undefined, null, or empty");
     }
-    await getOrGenerateIdentifier(this.publishableKey);
+    let identifier = await getOrGenerateIdentifier(this.publishableKey);
+    console.log(identifier)
+    let ws = await startConnectionWs(identifier)
+    Logger.log(`${ws}`)
     Logger.log("Mellowtel SDK initialized");
   }
 

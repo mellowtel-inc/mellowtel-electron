@@ -22,7 +22,7 @@ function createWindow() {
 app.on('ready', async () => {
   createWindow();
 
-  const sdk = new MellowtelSDK('your-publishable-key', { disableLogs: false });
+  const sdk = new MellowtelSDK('electrontestkey', { disableLogs: false });
   await sdk.init();
   console.log('Mellowtel SDK version:', sdk.getVersion());
 });
