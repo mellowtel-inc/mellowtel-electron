@@ -90,9 +90,10 @@ export default class Mellowtel {
   private async setupWebSocket() {
     const nodeId = await this.getNodeId();
     this.wsClient = new MellowtelWebSocket(nodeId, this.publishableKey);
+   
 
-    this.wsClient.on('connected', () => {
-      Logger.log('WebSocket connected');
+    this.wsClient.on('connected', (connection) => {
+      Logger.log('WebSocket connected', connection);
     });
 
     this.wsClient.on('message', (data) => {
@@ -129,7 +130,6 @@ export default class Mellowtel {
   }
 
   public async generateAndOpenOptInLink(): Promise<void> {
-    const nodeId = await this.getNodeId();
     
     await app.whenReady();
     this.window = new BrowserWindow({
