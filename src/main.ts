@@ -22,8 +22,11 @@ function createWindow() {
 
 app.on('ready', async () => {
   createWindow();
-
+  
   const sdk = new MellowtelSDK('electrontestkey', { disableLogs: false });
+  if (!sdk.getOptInStatus()){
+    await sdk.optIn()
+  }
   await sdk.init();
   console.log('Mellowtel SDK version:', sdk.getVersion());
 });

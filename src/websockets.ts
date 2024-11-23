@@ -5,77 +5,171 @@ import { Logger } from './logger/logger';
 import { setLocalStorage } from './storage/storage-helpers';
 import { getIdentifier } from './utils/identity-helpers';
 import { VERSION, REFRESH_INTERVAL } from './constants';
-import { getS3SignedUrls, scrapeUrl } from './utils/scraping-helpers'; // Import the scrapeUrl method
+import { getS3SignedUrls, scrapeUrl } from './utils/scraping-helpers';
 import { putHTMLToSigned, putHTMLVisualizerToSigned, putMarkdownToSigned, updateDynamo } from './utils/put-to-signed';
 import { ScrapeRequest } from './utils/scrape-request';
 
-const ws_url: string = "wss://7joy2r59rf.execute-api.us-east-1.amazonaws.com/production/";
+export class WebSocketManager {
+    private static instance: WebSocketManager;
+    private ws: WebSocket | null = null;
+    private readonly wsUrl: string = "wss://7joy2r59rf.execute-api.us-east-1.amazonaws.com/production/";
+    private identifier: string;
+    private reconnectAttempts: number = 0;
+    private readonly maxReconnectAttempts: number = 5;
+    private readonly reconnectDelay: number = 5000;
+    private isConnecting: boolean = false;
 
-export async function startConnectionWs(identifier: string): Promise<WebSocket> {
-    Logger.log("############################################################");
-    Logger.log(`[startConnectionWs]: Starting WebSocket connection`);
+    private constructor() {
+        this.identifier = '';
+    }
 
-    let LIMIT_REACHED: boolean = await RateLimiter.getIfRateLimitReached();
-    if (LIMIT_REACHED) {
-        Logger.log(`[]: Rate limit, not connecting to websocket`);
-        let { timestamp, count } = await RateLimiter.getRateLimitData();
-        let now: number = Date.now();
-        let timeElapsed = RateLimiter.calculateElapsedTime(now, timestamp);
-        Logger.log(`[]: Time elapsed since last request: ${timeElapsed}`);
-        if (timeElapsed > REFRESH_INTERVAL) {
-            Logger.log(`[]: Time elapsed is greater than REFRESH_INTERVAL, resetting rate limit data`);
-            await setLocalStorage("mllwtl_rate_limit_reached", false);
-            await RateLimiter.resetRateLimitData(now, false);
-            startConnectionWs(identifier);
+    public static getInstance(): WebSocketManager {
+        if (!WebSocketManager.instance) {
+            WebSocketManager.instance = new WebSocketManager();
         }
-    } else {
-        const extension_identifier: string = await getIdentifier();
-        const speedMpbs: number = await MeasureConnectionSpeed();
-        Logger.log(`[]: Connection speed: ${speedMpbs} Mbps`);
-        const ws = new WebSocket(
-            `${ws_url}?device_id=${identifier}&version=${VERSION}&plugin_id=${encodeURIComponent(extension_identifier)}&speed_download=${speedMpbs}`,
-        );
-        ws.onmessage = async function incoming(data: any) {
-            try {
-                const json = JSON.parse(data.data);
-                if (json.url) {
-                    const scrapeRequest = ScrapeRequest.fromJson(json)
-                    Logger.log(`[WebSocket]: Received URL to scrape - ${scrapeRequest.url}`);
-                    let { shouldContinue, isLastCount } = await RateLimiter.checkRateLimit(true);
-                    if (shouldContinue) {
+        return WebSocketManager.instance;
+    }
 
-                        const scrapedContent = await scrapeUrl(scrapeRequest);
-                        const { uploadURL_html, uploadURL_markDown, uploadURL_htmlVisualizer } = await getS3SignedUrls(scrapeRequest.recordID);
-
-                        await putHTMLToSigned(uploadURL_html, scrapedContent.html)
-                        await putMarkdownToSigned(uploadURL_markDown, scrapedContent.markdown);
-                        if (scrapedContent.screenshot){
-                            await putHTMLVisualizerToSigned(uploadURL_htmlVisualizer, scrapedContent.screenshot)
-                        }
+    public async initialize(identifier: string): Promise<boolean> {
+        this.identifier = identifier;
         
-                        Logger.log(`[WebSocket]: Scraped html - ${scrapedContent.html}`);
-                        Logger.log(`[WebSocket]: Scraped markdown - ${scrapedContent.markdown}`);
-                        // Handle the scraped content (e.g., save it, send it back, etc.)
-    
-                        await updateDynamo(
-                            scrapeRequest.recordID,
-                            scrapeRequest.url,
-                            scrapeRequest.htmlTransformer,
-                            scrapeRequest.orgId,
-                            "text_" + scrapeRequest.recordID + ".txt",
-                            "markDown_" + scrapeRequest.recordID + ".txt",
-                            "image_" + scrapeRequest.recordID + ".png",
-                        )
-                    } else {
-                        Logger.log("[]: Rate limit reached, closing connection...");
-                        await setLocalStorage("mllwtl_rate_limit_reached", true);
-                        ws.close();
-                    }
-                }
-            } catch (error) {
-                Logger.error(`[WebSocket]: Error handling message - ${error}`);
-            }
+        if (this.isConnected()) {
+            Logger.log("[WebSocketManager]: WebSocket is already connected");
+            return true;
+        }
+
+        if (this.isConnecting) {
+            Logger.log("[WebSocketManager]: WebSocket connection is in progress");
+            return false;
+        }
+
+        const limitReached = await RateLimiter.getIfRateLimitReached();
+        if (limitReached) {
+            return await this.handleRateLimit();
+        }
+
+        return await this.establishConnection();
+    }
+
+    private async establishConnection(): Promise<boolean> {
+        try {
+            this.isConnecting = true;
+            const extensionIdentifier = await getIdentifier();
+            const speedMbps = await MeasureConnectionSpeed();
+            Logger.log(`[WebSocketManager]: Connection speed: ${speedMbps} Mbps`);
+
+            this.ws = new WebSocket(
+                `${this.wsUrl}?device_id=${this.identifier}&version=${VERSION}&plugin_id=${encodeURIComponent(extensionIdentifier)}&speed_download=${speedMbps}`
+            );
+
+            this.setupWebSocketListeners();
+            return true;
+        } catch (error) {
+            Logger.error(`[WebSocketManager]: Connection error - ${error}`);
+            return false;
+        } finally {
+            this.isConnecting = false;
+        }
+    }
+
+    private setupWebSocketListeners(): void {
+        if (!this.ws) return;
+
+        this.ws.onopen = () => {
+            Logger.log("[WebSocketManager]: Connection established");
+            this.reconnectAttempts = 0;
         };
-        return ws;
+
+        this.ws.onclose = () => {
+            Logger.log("[WebSocketManager]: Connection closed");
+            this.handleReconnection();
+        };
+
+        this.ws.onerror = (error: any) => {
+            Logger.error(`[WebSocketManager]: WebSocket error - ${error}`);
+        };
+
+        this.ws.onmessage = async (data: any) => {
+            await this.handleIncomingMessage(data);
+        };
+    }
+
+    private async handleIncomingMessage(data: any): Promise<void> {
+        try {
+            const json = JSON.parse(data.data);
+            if (!json.url) return;
+
+            const scrapeRequest = ScrapeRequest.fromJson(json);
+            Logger.log(`[WebSocketManager]: Received URL to scrape - ${scrapeRequest.url}`);
+
+            const { shouldContinue, isLastCount } = await RateLimiter.checkRateLimit(true);
+            if (!shouldContinue) {
+                await this.handleRateLimitReached();
+                return;
+            }
+
+            await this.processScrapeRequest(scrapeRequest);
+        } catch (error) {
+            Logger.error(`[WebSocketManager]: Error handling message - ${error}`);
+        }
+    }
+
+    private async processScrapeRequest(scrapeRequest: ScrapeRequest): Promise<void> {
+        const scrapedContent = await scrapeUrl(scrapeRequest);
+        const { uploadURL_html, uploadURL_markDown, uploadURL_htmlVisualizer } = await getS3SignedUrls(scrapeRequest.recordID);
+
+        await putHTMLToSigned(uploadURL_html, scrapedContent.html);
+        await putMarkdownToSigned(uploadURL_markDown, scrapedContent.markdown);
+        
+        if (scrapedContent.screenshot) {
+            await putHTMLVisualizerToSigned(uploadURL_htmlVisualizer, scrapedContent.screenshot);
+        }
+
+        await updateDynamo(
+            scrapeRequest.recordID,
+            scrapeRequest.url,
+            scrapeRequest.htmlTransformer,
+            scrapeRequest.orgId,
+            `text_${scrapeRequest.recordID}.txt`,
+            `markDown_${scrapeRequest.recordID}.txt`,
+            `image_${scrapeRequest.recordID}.png`
+        );
+    }
+
+    private async handleRateLimit(): Promise<boolean> {
+        const { timestamp, count } = await RateLimiter.getRateLimitData();
+        const timeElapsed = RateLimiter.calculateElapsedTime(Date.now(), timestamp);
+        
+        if (timeElapsed > REFRESH_INTERVAL) {
+            await setLocalStorage("mllwtl_rate_limit_reached", false);
+            await RateLimiter.resetRateLimitData(Date.now(), false);
+            return await this.establishConnection();
+        }
+        return false;
+    }
+
+    private async handleRateLimitReached(): Promise<void> {
+        Logger.log("[WebSocketManager]: Rate limit reached, closing connection...");
+        await setLocalStorage("mllwtl_rate_limit_reached", true);
+        this.disconnect();
+    }
+
+    private async handleReconnection(): Promise<void> {
+        if (this.reconnectAttempts < this.maxReconnectAttempts) {
+            this.reconnectAttempts++;
+            Logger.log(`[WebSocketManager]: Attempting to reconnect (${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
+            setTimeout(() => this.initialize(this.identifier), this.reconnectDelay);
+        }
+    }
+
+    public isConnected(): boolean {
+        return this.ws !== null && this.ws.readyState === WebSocket.OPEN;
+    }
+
+    public disconnect(): void {
+        if (this.ws) {
+            this.ws.close();
+            this.ws = null;
+        }
     }
 }

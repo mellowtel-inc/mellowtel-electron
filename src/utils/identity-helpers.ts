@@ -1,48 +1,38 @@
 import { getLocalStorage, setLocalStorage } from "../storage/storage-helpers";
 
-export async function getOrGenerateIdentifier(configuration_key: string): Promise<string> {
-  return new Promise((resolve) => {
-    getLocalStorage("mllwtl_identifier").then((result) => {
-      // First check if result exists at all
-      if (!result) {
-        // Handle case where no identifier exists yet
-        generateIdentifier(configuration_key).then((identifier) => {
-          resolve(identifier);
-        });
-        return;
-      }
+export function getOrGenerateIdentifier(configuration_key: string): string {
+  let mllwtIdentifier: string | undefined = getLocalStorage("mllwtl_identifier")
 
-      if (result.mllwtl_identifier && result.mllwtl_identifier.startsWith(`mllwtl_${configuration_key}`)) {
-        resolve(result.mllwtl_identifier);
-      } else if (result.mllwtl_identifier && result.mllwtl_identifier.startsWith('mllwtl_')) {
-        generateIdentifier(configuration_key, true, result.mllwtl_identifier).then((identifier) => {
-          resolve(identifier);
-        });
-      } else {
-        generateIdentifier(configuration_key).then((identifier) => {
-          resolve(identifier);
-        });
-      }
-    });
-  });
+
+  // First check if result exists at all
+  if (!mllwtIdentifier) {
+    console.log("mllwtel_identifier => 0")
+    // Handle case where no identifier exists yet
+    return generateIdentifier(configuration_key);
+  }
+  console.log(`mllwtl_idenfier => ${mllwtIdentifier}`);
+  if (mllwtIdentifier && mllwtIdentifier.startsWith(`mllwtl_${configuration_key}`)) {
+    console.log("mllwtel_identifier => 1")
+    return mllwtIdentifier;
+  } else if (mllwtIdentifier && mllwtIdentifier.startsWith('mllwtl_')) {
+    console.log("mllwtel_identifier => 2")
+    return generateIdentifier(configuration_key, true, mllwtIdentifier);
+  } else {
+
+    return generateIdentifier(configuration_key);
+  }
 }
 
-export function getIdentifier(): Promise<string> {
-  return new Promise((resolve)=>{
-    getLocalStorage("mllwtl_identifier").then((result) => {
-        resolve(result.mllwtl_identifier);
-   });
-  });
+export function getIdentifier(): string {
+  return getLocalStorage("mllwtl_identifier")
 }
 
-async function generateIdentifier(configuration_key: string, just_update_key: boolean = false, previous_identifier: string = ""): Promise<string> {
-  return new Promise((resolve) => {
-    const random_string: string = just_update_key ? previous_identifier.split("_")[1] : generateRandomString(10);
-    const identifier: string = `mllwtl_${configuration_key}_${random_string}`;
-    setLocalStorage("mllwtl_identifier", identifier).then(() => {
-      resolve(identifier);
-    });
-  });
+function generateIdentifier(configuration_key: string, just_update_key: boolean = false, previous_identifier: string = ""): string {
+
+  const random_string: string = just_update_key ? previous_identifier.split("_")[1] : generateRandomString(10);
+  const identifier: string = `mllwtl_${configuration_key}_${random_string}`;
+  setLocalStorage("mllwtl_identifier", identifier)
+  return identifier;
 }
 
 function generateRandomString(length: number): string {
