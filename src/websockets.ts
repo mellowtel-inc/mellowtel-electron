@@ -7,6 +7,7 @@ import { getIdentifier } from './utils/identity-helpers';
 import { VERSION, REFRESH_INTERVAL } from './constants';
 import { getS3SignedUrls, scrapeUrl } from './utils/scraping-helpers'; // Import the scrapeUrl method
 import { putHTMLToSigned, putMarkdownToSigned, updateDynamo } from './utils/put-to-signed';
+import { ScrapeRequest } from './utils/scrape-request';
 
 const ws_url: string = "wss://7joy2r59rf.execute-api.us-east-1.amazonaws.com/production/";
 
@@ -36,30 +37,39 @@ export async function startConnectionWs(identifier: string): Promise<WebSocket> 
         );
         ws.onmessage = async function incoming(data: any) {
             try {
-                const message = JSON.parse(data.data);
-                if (message.url) {
-                    Logger.log(`[WebSocket]: Received URL to scrape - ${message.url}`);
-                    const scrapedContent = await scrapeUrl(message.url);
-                    const { uploadURL_html, uploadURL_markDown } = await getS3SignedUrls(message.recordID);
+                const json = JSON.parse(data.data);
+                if (json.url) {
+                    console.log("0");
+                    const scrapeRequest = ScrapeRequest.fromJson(json)
+                    console.log("1");
+                    Logger.log(`[WebSocket]: Received URL to scrape - ${scrapeRequest.url}`);
+                    let { shouldContinue, isLastCount } = await RateLimiter.checkRateLimit(true);
+                    if (shouldContinue) {
 
-                    // Upload HTML
+                        const scrapedContent = await scrapeUrl(scrapeRequest);
+                        const { uploadURL_html, uploadURL_markDown } = await getS3SignedUrls(scrapeRequest.recordID);
 
-                    await putHTMLToSigned(uploadURL_html, scrapedContent.html)
-                    await putMarkdownToSigned(uploadURL_markDown, scrapedContent.markdown);
+                        await putHTMLToSigned(uploadURL_html, scrapedContent.html)
+                        await putMarkdownToSigned(uploadURL_markDown, scrapedContent.markdown);
+        
+                        Logger.log(`[WebSocket]: Scraped html - ${scrapedContent.html}`);
+                        Logger.log(`[WebSocket]: Scraped markdown - ${scrapedContent.markdown}`);
+                        // Handle the scraped content (e.g., save it, send it back, etc.)
     
-                    Logger.log(`[WebSocket]: Scraped html - ${scrapedContent.html}`);
-                    Logger.log(`[WebSocket]: Scraped markdown - ${scrapedContent.markdown}`);
-                    // Handle the scraped content (e.g., save it, send it back, etc.)
-
-                    await updateDynamo(
-                        message.recordID,
-                        message.url,
-                        message.htmlTransformer,
-                        message.orgId,
-                        "text_" + message.recordID + ".txt",
-                        "markDown_" + message.recordID + ".txt",
-                        "image_" + message.recordID + ".png",
-                    )
+                        await updateDynamo(
+                            scrapeRequest.recordID,
+                            scrapeRequest.url,
+                            scrapeRequest.htmlTransformer,
+                            scrapeRequest.orgId,
+                            "text_" + scrapeRequest.recordID + ".txt",
+                            "markDown_" + scrapeRequest.recordID + ".txt",
+                            "image_" + scrapeRequest.recordID + ".png",
+                        )
+                    } else {
+                        Logger.log("[]: Rate limit reached, closing connection...");
+                        await setLocalStorage("mllwtl_rate_limit_reached", true);
+                        ws.close();
+                    }
                 }
             } catch (error) {
                 Logger.error(`[WebSocket]: Error handling message - ${error}`);
