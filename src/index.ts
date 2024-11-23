@@ -29,9 +29,8 @@ export default class MellowtelSDK {
     if (!this.publishableKey) {
       throw new Error("publishableKey is undefined, null, or empty");
     }
-
-    const isOptedIn = await this.getOptInStatus();
-    if (!isOptedIn) {
+    
+    if (!this.getOptInStatus()) {
       Logger.log("User is not opted in. WebSocket connection will not be established.");
       return;
     }
