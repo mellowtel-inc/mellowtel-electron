@@ -1,0 +1,22 @@
+{
+  "name": "example",
+  "version": "1.0.0",
+  "main": "main.js",
+  "scripts": {
+    "start": "npx tsc && electron .",
+    "build": "npx tsc",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "devDependencies": {
+    "@types/electron": "^1.4.38",
+    "electron": "^33.2.0",
+    "typescript": "^5.7.2"
+  },
+  "dependencies": {
+    "mellowtel-electron": "file:.yalc/mellowtel-electron"
+  }
+}

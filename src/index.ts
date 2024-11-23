@@ -24,8 +24,6 @@ export default class MellowtelSDK {
   }
 
   public async init(): Promise<void> {
-
-    getLocalStorage('test_key')
     if (!this.publishableKey) {
       throw new Error("publishableKey is undefined, null, or empty");
     }

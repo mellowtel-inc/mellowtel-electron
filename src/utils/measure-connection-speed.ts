@@ -1,5 +1,4 @@
 import { Logger } from "../logger/logger";
-import SpeedTest from "@cloudflare/speedtest";
 import { getLocalStorage, setLocalStorage } from "../storage/storage-helpers";
 import { SPEED_REFRESH_INTERVAL } from "../constants";
 
@@ -13,6 +12,10 @@ export async function MeasureConnectionSpeed(): Promise<number> {
 
     if (speedMbps === undefined || didSpeedTestExpire(speedTestTimestamp)) {
       Logger.log("[MeasureConnectionSpeed]: Running speed test...");
+
+      // Use dynamic import to load the ES Module
+      const { default: SpeedTest } = await import("@cloudflare/speedtest");
+
       const speedTest = new SpeedTest({
         autoStart: false,
         measurements: [{ type: "download", bytes: 10e6, count: 1 }],
