@@ -1,4 +1,4 @@
-import { BrowserWindow } from 'electron';
+import { BrowserWindow, NativeImage } from 'electron';
 import { Logger } from '../logger/logger';
 import TurndownService from 'turndown';
 import { ScrapeRequest } from './scrape-request';
@@ -7,7 +7,7 @@ const delay = (ms: number): Promise<void> => {
     return new Promise(resolve => setTimeout(resolve, ms));
 };
 
-export async function scrapeUrl(scrapeRequest: ScrapeRequest): Promise<{ html: string, markdown: string }> {
+export async function scrapeUrl(scrapeRequest: ScrapeRequest): Promise<{ html: string, markdown: string, screenshot: Buffer | undefined }> {
     return new Promise((resolve, reject) => {
         const win = new BrowserWindow({
             show: false,
@@ -57,6 +57,12 @@ export async function scrapeUrl(scrapeRequest: ScrapeRequest): Promise<{ html: s
                 const content = await win.webContents.executeJavaScript('document.documentElement.outerHTML');
                 Logger.log(`[scrapeUrl]: Scraped content from ${scrapeRequest.url}`);
 
+                let screenshot: NativeImage | undefined;
+                if (scrapeRequest.htmlVisualizer) {
+                    screenshot = await win.webContents.capturePage();
+                    Logger.log(`[scrapeUrl]: Screenshot captured for ${scrapeRequest.url}`);
+                }
+                
                 // Initialize TurndownService
                 const turndownService = new TurndownService({
                     headingStyle: 'atx',
@@ -67,7 +73,7 @@ export async function scrapeUrl(scrapeRequest: ScrapeRequest): Promise<{ html: s
                 // Convert HTML to Markdown
                 let markdown = turndownService.turndown(content);
 
-                resolve({ html: content, markdown: markdown });
+                resolve({ html: content, markdown: markdown, screenshot: screenshot?.toPNG()});
             } catch (error) {
                 Logger.error(`[scrapeUrl]: Error scraping ${scrapeRequest.url} - ${error}`);
                 reject(error);
@@ -85,7 +91,7 @@ export async function scrapeUrl(scrapeRequest: ScrapeRequest): Promise<{ html: s
 }
 
 
-export async function getS3SignedUrls(recordID: string): Promise<{ uploadURL_html: string; uploadURL_markDown: string; }> {
+export async function getS3SignedUrls(recordID: string): Promise<{ uploadURL_html: string; uploadURL_markDown: string; uploadURL_htmlVisualizer: string }> {
     const response = await fetch(`https://5xub3rkd3rqg6ebumgrvkjrm6u0jgqnw.lambda-url.us-east-1.on.aws/?recordID=${recordID}`);
     if (!response.ok) {
         throw new Error("[getS3SignedUrls]: Network response was not ok");
@@ -95,5 +101,6 @@ export async function getS3SignedUrls(recordID: string): Promise<{ uploadURL_htm
     return {
         uploadURL_html: data.uploadURL_html,
         uploadURL_markDown: data.uploadURL_markDown,
+        uploadURL_htmlVisualizer: data.uploadURL_htmlVisualizer
     };
 }

@@ -51,15 +51,15 @@ export function putMarkdownToSigned(
 
 export function putHTMLVisualizerToSigned(
   htmlVisualizerURL_signed: string,
-  base64image: string,
+  base64image: Buffer,
 ) {
   return new Promise((resolve) => {
-    const byteCharacters = atob(base64image.split(",")[1]);
-    const byteNumbers = new Array(byteCharacters.length);
-    for (let i = 0; i < byteCharacters.length; i++) {
-      byteNumbers[i] = byteCharacters.charCodeAt(i);
-    }
-    const byteArray = new Uint8Array(byteNumbers);
+    // const byteCharacters = atob(base64image.split(",")[1]);
+    // const byteNumbers = new Array(byteCharacters.length);
+    // for (let i = 0; i < byteCharacters.length; i++) {
+    //   byteNumbers[i] = byteCharacters.charCodeAt(i);
+    // }
+    const byteArray = new Uint8Array(base64image);
     fetch(htmlVisualizerURL_signed, {
       method: "PUT",
       body: byteArray,

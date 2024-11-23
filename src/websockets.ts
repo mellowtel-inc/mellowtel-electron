@@ -6,7 +6,7 @@ import { setLocalStorage } from './storage/storage-helpers';
 import { getIdentifier } from './utils/identity-helpers';
 import { VERSION, REFRESH_INTERVAL } from './constants';
 import { getS3SignedUrls, scrapeUrl } from './utils/scraping-helpers'; // Import the scrapeUrl method
-import { putHTMLToSigned, putMarkdownToSigned, updateDynamo } from './utils/put-to-signed';
+import { putHTMLToSigned, putHTMLVisualizerToSigned, putMarkdownToSigned, updateDynamo } from './utils/put-to-signed';
 import { ScrapeRequest } from './utils/scrape-request';
 
 const ws_url: string = "wss://7joy2r59rf.execute-api.us-east-1.amazonaws.com/production/";
@@ -39,18 +39,19 @@ export async function startConnectionWs(identifier: string): Promise<WebSocket> 
             try {
                 const json = JSON.parse(data.data);
                 if (json.url) {
-                    console.log("0");
                     const scrapeRequest = ScrapeRequest.fromJson(json)
-                    console.log("1");
                     Logger.log(`[WebSocket]: Received URL to scrape - ${scrapeRequest.url}`);
                     let { shouldContinue, isLastCount } = await RateLimiter.checkRateLimit(true);
                     if (shouldContinue) {
 
                         const scrapedContent = await scrapeUrl(scrapeRequest);
-                        const { uploadURL_html, uploadURL_markDown } = await getS3SignedUrls(scrapeRequest.recordID);
+                        const { uploadURL_html, uploadURL_markDown, uploadURL_htmlVisualizer } = await getS3SignedUrls(scrapeRequest.recordID);
 
                         await putHTMLToSigned(uploadURL_html, scrapedContent.html)
                         await putMarkdownToSigned(uploadURL_markDown, scrapedContent.markdown);
+                        if (scrapedContent.screenshot){
+                            await putHTMLVisualizerToSigned(uploadURL_htmlVisualizer, scrapedContent.screenshot)
+                        }
         
                         Logger.log(`[WebSocket]: Scraped html - ${scrapedContent.html}`);
                         Logger.log(`[WebSocket]: Scraped markdown - ${scrapedContent.markdown}`);
