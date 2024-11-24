@@ -17,15 +17,18 @@ function createWindow(): BrowserWindow {
 }
 
 // When the app is ready, create the window
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   let win = createWindow();
   
   const sdk: MellowtelSDK = new MellowtelSDK('electrontestkey', {
     disableLogs: false
   });
-  sdk.showConsentSettings(win);
 
-  // sdk.requestConsent(win, 'Get free 3 months access').then(()=>sdk.init())
+  await sdk.requestConsent(win, "Get 3 months free")
+  await sdk.init()
+
+  // Enable from the settings page.
+  await sdk.showConsentSettings(win);
 
   // On macOS, create a new window when clicking the dock icon if no windows are open
   app.on('activate', (): void => {

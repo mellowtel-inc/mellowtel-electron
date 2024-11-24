@@ -43,22 +43,17 @@ export default class MellowtelSDK {
   }
 
   public async requestConsent(window: BrowserWindow, incentive: string): Promise<void> {
-    // if(!this.getOptInStatus()){
-    let result = await showConsentDialog({
-      incentive: incentive,
-      acceptButtonText: "Yes, accept",
-      declineButtonText: "Later",
-      parentWindow: window!
-    });
-
-    if (result) {
-      await this.optIn();
+    if(getLocalStorage(OPT_IN_STATUS_KEY) == undefined){
+      let result = await showConsentDialog({
+        incentive: incentive,
+        acceptButtonText: "Yes, accept",
+        declineButtonText: "Later",
+        parentWindow: window!
+      });
+      setLocalStorage(OPT_IN_STATUS_KEY, result);
     } else {
-      await this.optOut();
+      Logger.log("Consent already provided");
     }
-    // } else {
-    //   Logger.log("Consent already provided");
-    // }
   }
 
 
