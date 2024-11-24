@@ -1,7 +1,7 @@
 import { app, BrowserWindow } from 'electron';
 import MellowtelSDK from 'mellowtel-electron';
 
-function createWindow(): void {
+function createWindow(): BrowserWindow {
   // Create the browser window
   const win: BrowserWindow = new BrowserWindow({
     width: 800,
@@ -13,19 +13,19 @@ function createWindow(): void {
 
   // Load the index.html file
   win.loadFile('index.html');
+  return win
 }
 
 // When the app is ready, create the window
 app.whenReady().then(() => {
-  createWindow();
+  let win = createWindow();
   
-  const sdk: MellowtelSDK = new MellowtelSDK('your-publishable-key', {
+  const sdk: MellowtelSDK = new MellowtelSDK('electrontestkey', {
     disableLogs: false
   });
+  sdk.showConsentSettings(win);
 
-  sdk.optIn().then((): void => {
-    sdk.init();
-  });
+  // sdk.requestConsent(win, 'Get free 3 months access').then(()=>sdk.init())
 
   // On macOS, create a new window when clicking the dock icon if no windows are open
   app.on('activate', (): void => {
