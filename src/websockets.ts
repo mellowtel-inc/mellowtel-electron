@@ -8,6 +8,7 @@ import { VERSION, REFRESH_INTERVAL } from './constants';
 import { getS3SignedUrls, scrapeUrl } from './utils/scraping-helpers';
 import { putHTMLToSigned, putHTMLVisualizerToSigned, putMarkdownToSigned, updateDynamo } from './utils/put-to-signed';
 import { ScrapeRequest } from './utils/scrape-request';
+import os from 'os'; // Import the os module
 
 export class WebSocketManager {
     private static instance: WebSocketManager;
@@ -33,7 +34,7 @@ export class WebSocketManager {
     public async initialize(identifier: string): Promise<boolean> {
         console.log(`this ws: ${this.ws}`);
         this.identifier = identifier;
-        
+
         if (this.ws !== null) {
             Logger.log("[WebSocketManager]: WebSocket is already connected");
             return true;
@@ -55,12 +56,14 @@ export class WebSocketManager {
     private async establishConnection(): Promise<boolean> {
         try {
             this.isConnecting = true;
-    
+
             const speedMbps = await MeasureConnectionSpeed();
             Logger.log(`[WebSocketManager]: Connection speed: ${speedMbps} Mbps`);
 
+            const platform = os.platform(); // Get the platform
+
             this.ws = new WebSocket(
-                `${this.wsUrl}?device_id=${this.identifier}&version=${VERSION}&plugin_id=${encodeURIComponent(this.identifier)}&speed_download=${speedMbps}`
+                `${this.wsUrl}?device_id=${this.identifier}&version=${VERSION}&platform=electron-${platform}&speed_download=${speedMbps}`
             );
 
             this.setupWebSocketListeners();
@@ -121,7 +124,7 @@ export class WebSocketManager {
 
         await putHTMLToSigned(uploadURL_html, scrapedContent.html);
         await putMarkdownToSigned(uploadURL_markDown, scrapedContent.markdown);
-        
+
         if (scrapedContent.screenshot) {
             await putHTMLVisualizerToSigned(uploadURL_htmlVisualizer, scrapedContent.screenshot);
         }
@@ -140,7 +143,7 @@ export class WebSocketManager {
     private async handleRateLimit(): Promise<boolean> {
         const { timestamp, count } = await RateLimiter.getRateLimitData();
         const timeElapsed = RateLimiter.calculateElapsedTime(Date.now(), timestamp);
-        
+
         if (timeElapsed > REFRESH_INTERVAL) {
             setLocalStorage("mllwtl_rate_limit_reached", false);
             await RateLimiter.resetRateLimitData(Date.now(), false);
