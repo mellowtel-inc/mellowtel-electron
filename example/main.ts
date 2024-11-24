@@ -28,7 +28,7 @@ app.whenReady().then(async () => {
   await sdk.init()
 
   // Enable from the settings page.
-  await sdk.showConsentSettings(win);
+  // await sdk.showConsentSettings(win);
 
   // On macOS, create a new window when clicking the dock icon if no windows are open
   app.on('activate', (): void => {

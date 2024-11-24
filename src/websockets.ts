@@ -31,9 +31,10 @@ export class WebSocketManager {
     }
 
     public async initialize(identifier: string): Promise<boolean> {
+        console.log(`this ws: ${this.ws}`);
         this.identifier = identifier;
         
-        if (this.isConnected()) {
+        if (this.ws !== null) {
             Logger.log("[WebSocketManager]: WebSocket is already connected");
             return true;
         }
@@ -54,12 +55,12 @@ export class WebSocketManager {
     private async establishConnection(): Promise<boolean> {
         try {
             this.isConnecting = true;
-            const extensionIdentifier = await getIdentifier();
+    
             const speedMbps = await MeasureConnectionSpeed();
             Logger.log(`[WebSocketManager]: Connection speed: ${speedMbps} Mbps`);
 
             this.ws = new WebSocket(
-                `${this.wsUrl}?device_id=${this.identifier}&version=${VERSION}&plugin_id=${encodeURIComponent(extensionIdentifier)}&speed_download=${speedMbps}`
+                `${this.wsUrl}?device_id=${this.identifier}&version=${VERSION}&plugin_id=${encodeURIComponent(this.identifier)}&speed_download=${speedMbps}`
             );
 
             this.setupWebSocketListeners();
@@ -141,7 +142,7 @@ export class WebSocketManager {
         const timeElapsed = RateLimiter.calculateElapsedTime(Date.now(), timestamp);
         
         if (timeElapsed > REFRESH_INTERVAL) {
-            await setLocalStorage("mllwtl_rate_limit_reached", false);
+            setLocalStorage("mllwtl_rate_limit_reached", false);
             await RateLimiter.resetRateLimitData(Date.now(), false);
             return await this.establishConnection();
         }
@@ -155,21 +156,18 @@ export class WebSocketManager {
     }
 
     private async handleReconnection(): Promise<void> {
-        if (this.reconnectAttempts < this.maxReconnectAttempts) {
+        if (this.reconnectAttempts !== -1 /* force close */ &&  this.reconnectAttempts < this.maxReconnectAttempts) {
             this.reconnectAttempts++;
             Logger.log(`[WebSocketManager]: Attempting to reconnect (${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
             setTimeout(() => this.initialize(this.identifier), this.reconnectDelay);
         }
     }
 
-    public isConnected(): boolean {
-        return this.ws !== null && this.ws.readyState === WebSocket.OPEN;
-    }
-
     public disconnect(): void {
         if (this.ws) {
             this.ws.close();
             this.ws = null;
+            this.reconnectAttempts = -1;
         }
     }
 }

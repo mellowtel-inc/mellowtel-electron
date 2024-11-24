@@ -64,6 +64,7 @@ export default class MellowtelSDK {
       parentWindow: window,
       onOptIn: async () => {
         await this.optIn();
+        await this.wsManager.initialize(this.nodeId);
       },
       onOptOut: async () => {
         await this.optOut();
@@ -90,7 +91,6 @@ export default class MellowtelSDK {
    */
   public async optIn(): Promise<void> {
     setLocalStorage(OPT_IN_STATUS_KEY, true);
-    await this.wsManager.initialize(this.nodeId)
     Logger.log("User opted in");
   }
 
