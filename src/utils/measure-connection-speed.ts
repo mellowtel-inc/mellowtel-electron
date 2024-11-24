@@ -2,10 +2,11 @@ import { Logger } from "../logger/logger";
 import { getLocalStorage, setLocalStorage } from "../storage/storage-helpers";
 import { SPEED_REFRESH_INTERVAL } from "../constants";
 
+// https://github.com/TypeStrong/ts-node/discussions/1290
+const dynamicImport = new Function('specifier', 'return import(specifier)');
+
 export async function MeasureConnectionSpeed(): Promise<number> {
   return new Promise(async (resolve) => {
-    resolve(100);
-    return ;
     let savedSpeedTestResults = await getSavedSpeedTestResults();
     let speedMbps = savedSpeedTestResults.speedMbps;
     let speedTestTimestamp = savedSpeedTestResults.speedTestTimestamp;
@@ -13,15 +14,14 @@ export async function MeasureConnectionSpeed(): Promise<number> {
     if (speedMbps === undefined || didSpeedTestExpire(speedTestTimestamp)) {
       Logger.log("[MeasureConnectionSpeed]: Running speed test...");
 
-      // Use dynamic import to load the ES Module
-      const { default: SpeedTest } = await import("@cloudflare/speedtest");
-
-      const speedTest = new SpeedTest({
+      const cloudSpeed  = await dynamicImport('@cloudflare/speedtest')
+      console.log(cloudSpeed.default)
+      const speedTest = new cloudSpeed.default({
         autoStart: false,
         measurements: [{ type: "download", bytes: 10e6, count: 1 }],
       });
 
-      speedTest.onFinish = async (results) => {
+      speedTest.onFinish = async (results: any) => {
         const bandwidth = results.getDownloadBandwidth();
         if (!bandwidth) {
           Logger.log("Speed test failed. Could not get bandwidth");
