@@ -23,7 +23,7 @@ import { BrowserWindow } from 'electron';
 const sdk = new MellowtelSDK('configuration-key');
 
 const window = new BrowserWindow();
-let consent = await sdk.requestConsent(window, "Get Premium Free");
+let consent = await sdk.requestConsent(/*browser window*/, "Get Premium Free");
 if (consent){
     // Activate if any rewards for opt-in user
 }
@@ -42,7 +42,7 @@ const { BrowserWindow } = require('electron');
 const sdk = new MellowtelSDK('configuration-key');
 
 // Request user consent
-sdk.requestConsent(/*current browser window*/, "Get Premium Free")
+sdk.requestConsent(/*browser window*/, "Get Premium Free")
 .then(consent => {
     if (consent){
         // Activate if any rewards for opt-in user
