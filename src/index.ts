@@ -1,33 +1,43 @@
 import { getOrGenerateIdentifier } from "./utils/identity-helpers";
 import { Logger } from "./logger/logger";
-import { RateLimiter } from "./local-rate-limiting/rate-limiter";
-import { MAX_DAILY_RATE as DEFAULT_MAX_DAILY_RATE, VERSION } from "./constants";
 import { WebSocketManager } from "./websockets";
 import { getLocalStorage, setLocalStorage } from "./storage/storage-helpers";
 import { BrowserWindow } from 'electron'
 import { showConsentSettings } from "./dialogs/consent-setttings";
 import { showConsentDialog } from "./dialogs/consent-dialog";
+
 const OPT_IN_STATUS_KEY = "mellowtel_opt_in_status";
+
+interface MellowtelSDKOptions {
+  disableLogs: boolean
+}
 
 export default class MellowtelSDK {
   private configurationKey: string;
   private nodeId: string;
-  private options?: any;
+  private options?: MellowtelSDKOptions;
   private disableLogs: boolean = true;
-  private MAX_DAILY_RATE: number = DEFAULT_MAX_DAILY_RATE;
   private wsManager: WebSocketManager = WebSocketManager.getInstance();
 
-  constructor(publishableKey: string, options?: any) {
+  /**
+   * Creates an instance of MellowtelSDK.
+   * @param publishableKey - The publishable key for the SDK.
+   * @param options - Optional configuration options.
+   */
+  constructor(publishableKey: string, options?: MellowtelSDKOptions) {
     this.configurationKey = publishableKey;
     this.options = options;
     this.disableLogs = options?.disableLogs !== undefined ? options.disableLogs : true;
-    this.MAX_DAILY_RATE = options?.MAX_DAILY_RATE || DEFAULT_MAX_DAILY_RATE;
-    RateLimiter.MAX_DAILY_RATE = this.MAX_DAILY_RATE;
     Logger.disableLogs = this.disableLogs;
-    this.nodeId = getOrGenerateIdentifier(publishableKey)
+    this.nodeId = getOrGenerateIdentifier(publishableKey);
     Logger.log(this.nodeId);
   }
 
+  /**
+   * Initializes the SDK.
+   * @returns Promise<void>
+   * @throws Error if the publishableKey is undefined, null, or empty.
+   */
   public async init(): Promise<void> {
     if (!this.configurationKey) {
       throw new Error("publishableKey is undefined, null, or empty");
@@ -42,8 +52,14 @@ export default class MellowtelSDK {
     Logger.log("Mellowtel SDK initialized");
   }
 
+  /**
+   * Requests user consent.
+   * @param window - The Electron BrowserWindow instance.
+   * @param incentive - The incentive to show in the consent dialog.
+   * @returns Promise<void>
+   */
   public async requestConsent(window: BrowserWindow, incentive: string): Promise<void> {
-    if(getLocalStorage(OPT_IN_STATUS_KEY) == undefined){
+    if (getLocalStorage(OPT_IN_STATUS_KEY) == undefined) {
       let result = await showConsentDialog({
         incentive: incentive,
         acceptButtonText: "Yes, accept",
@@ -56,7 +72,11 @@ export default class MellowtelSDK {
     }
   }
 
-
+  /**
+   * Shows the consent settings dialog.
+   * @param window - The Electron BrowserWindow instance.
+   * @returns Promise<void>
+   */
   public async showConsentSettings(window: BrowserWindow): Promise<void> {
     await showConsentSettings({
       initiallyOptedIn: this.getOptInStatus(),
@@ -72,13 +92,9 @@ export default class MellowtelSDK {
     });
   }
 
-  public getVersion(): string {
-    return VERSION;
-  }
-
   /**
-   * Get the current opt-in status
-   * @returns Promise<boolean> - Returns true if user is opted in, false otherwise
+   * Gets the current opt-in status.
+   * @returns boolean - Returns true if the user is opted in, false otherwise.
    */
   public getOptInStatus(): boolean {
     const status = getLocalStorage(OPT_IN_STATUS_KEY);
@@ -86,7 +102,7 @@ export default class MellowtelSDK {
   }
 
   /**
-   * Opt in to the service and initialize WebSocket if not already initialized
+   * Opts in to the service and initializes WebSocket if not already initialized.
    * @returns Promise<void>
    */
   public async optIn(): Promise<void> {
@@ -95,7 +111,7 @@ export default class MellowtelSDK {
   }
 
   /**
-   * Opt out of the service and disconnect WebSocket if connected
+   * Opts out of the service and disconnects WebSocket if connected.
    * @returns Promise<void>
    */
   public async optOut(): Promise<void> {

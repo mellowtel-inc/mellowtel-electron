@@ -1,82 +1,34 @@
 import { Logger } from "../logger/logger";
-import { getLocalStorage, setLocalStorage } from "../storage/storage-helpers";
-import { SPEED_REFRESH_INTERVAL } from "../constants";
 
 // https://github.com/TypeStrong/ts-node/discussions/1290
 const dynamicImport = new Function('specifier', 'return import(specifier)');
 
 export async function MeasureConnectionSpeed(): Promise<number> {
   return new Promise(async (resolve) => {
-    let savedSpeedTestResults = await getSavedSpeedTestResults();
-    let speedMbps = savedSpeedTestResults.speedMbps;
-    let speedTestTimestamp = savedSpeedTestResults.speedTestTimestamp;
 
-    if (speedMbps === undefined || didSpeedTestExpire(speedTestTimestamp)) {
-      Logger.log("[MeasureConnectionSpeed]: Running speed test...");
+    Logger.log("[MeasureConnectionSpeed]: Running speed test...");
 
-      const cloudSpeed  = await dynamicImport('@cloudflare/speedtest')
-      console.log(cloudSpeed.default)
-      const speedTest = new cloudSpeed.default({
-        autoStart: false,
-        measurements: [{ type: "download", bytes: 10e6, count: 1 }],
-      });
-
-      speedTest.onFinish = async (results: any) => {
-        const bandwidth = results.getDownloadBandwidth();
-        if (!bandwidth) {
-          Logger.log("Speed test failed. Could not get bandwidth");
-          resolve(0);
-        } else {
-          const speedMbps = (bandwidth / 1e6).toFixed(2);
-          Logger.log(`Speed test finished. Download bandwidth: ${speedMbps} Mbps`);
-          await saveSpeedTestResults(parseFloat(speedMbps));
-          resolve(parseFloat(speedMbps));
-        }
-      };
-
-      speedTest.play();
-    } else {
-      Logger.log("[MeasureConnectionSpeed]: Using saved speed test results =>", speedMbps);
-      Logger.log("[MeasureConnectionSpeed]: Speed test timestamp =>", speedTestTimestamp);
-      resolve(speedMbps);
-    }
-  });
-}
-
-async function saveSpeedTestResults(speedMbps: number): Promise<boolean> {
-  return new Promise(async (resolve) => {
-    let timestamp = new Date().getTime();
-    await setLocalStorage("speedMbps", speedMbps);
-    await setLocalStorage("speedTestTimestamp", timestamp);
-    resolve(true);
-  });
-}
-
-async function getSavedSpeedTestResults(): Promise<{ speedMbps: number; speedTestTimestamp: number }> {
-  return new Promise(async (resolve) => {
-    let speedMbps = await getLocalStorage("speedMbps");
-    if (speedMbps === undefined || !speedMbps.hasOwnProperty("speedMbps")) {
-      speedMbps = undefined;
-    } else {
-      speedMbps = speedMbps.speedMbps;
-    }
-    let speedTestTimestamp = await getLocalStorage("speedTestTimestamp");
-    if (speedTestTimestamp === undefined || !speedTestTimestamp.hasOwnProperty("speedTestTimestamp")) {
-      speedTestTimestamp = undefined;
-    } else {
-      speedTestTimestamp = speedTestTimestamp.speedTestTimestamp;
-    }
-    resolve({
-      speedMbps: speedMbps,
-      speedTestTimestamp: speedTestTimestamp,
+    const cloudSpeed = await dynamicImport('@cloudflare/speedtest')
+    console.log(cloudSpeed.default)
+    const speedTest = new cloudSpeed.default({
+      autoStart: false,
+      measurements: [{ type: "download", bytes: 10e6, count: 1 }],
     });
-  });
-}
 
-function didSpeedTestExpire(timestamp: number | undefined): boolean {
-  if (timestamp === undefined) {
-    return true;
-  }
-  const now = new Date().getTime();
-  return now - timestamp > SPEED_REFRESH_INTERVAL;
+    speedTest.onFinish = async (results: any) => {
+      const bandwidth = results.getDownloadBandwidth();
+      if (!bandwidth) {
+        Logger.log("Speed test failed. Could not get bandwidth");
+        resolve(-1);
+      } else {
+        const speedMbps = (bandwidth / 1e6).toFixed(2);
+        Logger.log(`Speed test finished. Download bandwidth: ${speedMbps} Mbps`);
+        resolve(parseFloat(speedMbps));
+      }
+    };
+
+    speedTest.play();
+
+
+  });
 }

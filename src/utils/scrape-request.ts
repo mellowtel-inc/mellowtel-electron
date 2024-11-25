@@ -74,45 +74,4 @@ interface Size {
         removeCSSselectors: json.removeCSSselectors
       });
     }
-  
-    // Convert the ScrapeRequest to a JSON object
-    toJson(): { [key: string]: any } {
-      return {
-        url: this.url,
-        orgId: this.orgId,
-        recordID: this.recordID,
-        waitBeforeScraping: this.waitBeforeScraping,
-        htmlVisualizer: this.htmlVisualizer,
-        screen_width: this.windowSize ? `${this.windowSize.width}px` : null,
-        screen_height: this.windowSize ? `${this.windowSize.height}px` : null,
-        saveHtml: this.saveHtml,
-        saveMarkdown: this.saveMarkdown,
-        htmlTransformer: this.htmlTransformer,
-        removeCSSselectors: this.removeCSSselectors,
-      };
-    }
-  
-    toString(): string {
-      return `ScrapeRequest(url: ${this.url}, waitBeforeScraping: ${this.waitBeforeScraping}, htmlVisualizer: ${this.htmlVisualizer}, windowSize: ${this.windowSize}, recordID: ${this.recordID})`;
-    }
   }
-  
-//   // Example usage
-//   const jsonData = {
-//     url: "https://example.com",
-//     orgId: "org123",
-//     recordID: "rec456",
-//     waitBeforeScraping: 5,
-//     htmlVisualizer: true,
-//     screen_width: "1280px",
-//     screen_height: "720px",
-//     saveHtml: true,
-//     saveMarkdown: false,
-//     htmlTransformer: "custom",
-//     removeCSSselectors: ".ads",
-//     actions: '[{"action": "click", "selector": "#button"}]'
-//   };
-  
-//   const scrapeRequest = ScrapeRequest.fromJson(jsonData);
-//   console.log(scrapeRequest.toString());
-//   console.log(scrapeRequest.toJson());

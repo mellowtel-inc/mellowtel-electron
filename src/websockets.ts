@@ -2,8 +2,7 @@ import WebSocket from 'isomorphic-ws';
 import { MeasureConnectionSpeed } from './utils/measure-connection-speed';
 import { RateLimiter } from './local-rate-limiting/rate-limiter';
 import { Logger } from './logger/logger';
-import { setLocalStorage } from './storage/storage-helpers';
-import { VERSION, REFRESH_INTERVAL } from './constants';
+import { VERSION } from './constants';
 import { getS3SignedUrls, scrapeUrl } from './utils/scraping-helpers';
 import { putHTMLToSigned, putHTMLVisualizerToSigned, putMarkdownToSigned, updateDynamo } from './utils/put-to-signed';
 import { ScrapeRequest } from './utils/scrape-request';
@@ -44,9 +43,8 @@ export class WebSocketManager {
             return false;
         }
 
-        const limitReached = await RateLimiter.getIfRateLimitReached();
-        if (limitReached) {
-            return await this.handleRateLimit();
+        if (!RateLimiter.shouldContinue(false)) {
+            return false;
         }
 
         return await this.establishConnection();
@@ -59,10 +57,12 @@ export class WebSocketManager {
             const speedMbps = await MeasureConnectionSpeed();
             Logger.log(`[WebSocketManager]: Connection speed: ${speedMbps} Mbps`);
 
-            const platform = os.platform(); // Get the platform
+            const rawPlatform = os.platform();
+
+            let platform = rawPlatform == 'darwin' ? 'macos' : rawPlatform == 'win32' ? 'windows' : 'linux'
 
             this.ws = new WebSocket(
-                `${this.wsUrl}?device_id=${this.identifier}&version=${VERSION}&platform=electron-${platform}&speed_download=${speedMbps}`
+                `${this.wsUrl}?device_id=${this.identifier}&version=${VERSION}&platform=electron-${platform}` + (speedMbps != -1 ? `&speed_download=${speedMbps}` : ``)
             );
 
             this.setupWebSocketListeners();
@@ -105,8 +105,7 @@ export class WebSocketManager {
             const scrapeRequest = ScrapeRequest.fromJson(json);
             Logger.log(`[WebSocketManager]: Received URL to scrape - ${scrapeRequest.url}`);
 
-            const { shouldContinue, isLastCount } = await RateLimiter.checkRateLimit(true);
-            if (!shouldContinue) {
+            if (!RateLimiter.shouldContinue()) {
                 await this.handleRateLimitReached();
                 return;
             }
@@ -139,33 +138,20 @@ export class WebSocketManager {
         );
     }
 
-    private async handleRateLimit(): Promise<boolean> {
-        const { timestamp, count } = await RateLimiter.getRateLimitData();
-        const timeElapsed = RateLimiter.calculateElapsedTime(Date.now(), timestamp);
-
-        if (timeElapsed > REFRESH_INTERVAL) {
-            setLocalStorage("mllwtl_rate_limit_reached", false);
-            await RateLimiter.resetRateLimitData(Date.now(), false);
-            return await this.establishConnection();
-        }
-        return false;
-    }
-
     private async handleRateLimitReached(): Promise<void> {
         Logger.log("[WebSocketManager]: Rate limit reached, closing connection...");
-        await setLocalStorage("mllwtl_rate_limit_reached", true);
         this.disconnect();
     }
 
     private async handleReconnection(): Promise<void> {
         /* force close */
-        if ( this.reconnectAttempts !== -1 ){
-           
+        if (this.reconnectAttempts !== -1) {
+
             this.reconnectAttempts = 0;
-            return ;
+            return;
         }
 
-        if ( this.reconnectAttempts < this.maxReconnectAttempts) {
+        if (this.reconnectAttempts < this.maxReconnectAttempts) {
             this.reconnectAttempts++;
             Logger.log(`[WebSocketManager]: Attempting to reconnect (${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
             setTimeout(() => this.initialize(this.identifier), this.reconnectDelay);
