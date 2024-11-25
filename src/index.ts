@@ -5,8 +5,8 @@ import { MAX_DAILY_RATE as DEFAULT_MAX_DAILY_RATE, VERSION } from "./constants";
 import { WebSocketManager } from "./websockets";
 import { getLocalStorage, setLocalStorage } from "./storage/storage-helpers";
 import { BrowserWindow } from 'electron'
-import { showConsentSettings } from "./consent-setttings";
-import { showConsentDialog } from "./consent-dialog";
+import { showConsentSettings } from "./dialogs/consent-setttings";
+import { showConsentDialog } from "./dialogs/consent-dialog";
 const OPT_IN_STATUS_KEY = "mellowtel_opt_in_status";
 
 export default class MellowtelSDK {

@@ -7,7 +7,6 @@ enum ContainerState {
 }
 
 interface ConsentSettingsOptions {
-    // appName: string;
     initiallyOptedIn: boolean;
     onOptIn: () => Promise<void>;
     onOptOut: () => Promise<void>;
@@ -16,7 +15,6 @@ interface ConsentSettingsOptions {
 }
 
 export async function showConsentSettings({
-    // appName,
     initiallyOptedIn,
     onOptIn,
     onOptOut,
@@ -47,9 +45,7 @@ export async function showConsentSettings({
 
         const result = await dialog.showMessageBox(parentWindow!, {
             type: 'info',
-            message: "Consent Settings",
-            // title: appName,
-            // message: `${appName} - Consent Settings`,
+            message: "Manage Consent",
             detail: messageText + (currentState === ContainerState.OPTED_IN ? `\n\nNode ID: ${nodeId}` : ''),
             buttons: buttons,
             defaultId: defaultId,

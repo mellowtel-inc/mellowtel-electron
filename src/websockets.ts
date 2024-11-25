@@ -3,12 +3,11 @@ import { MeasureConnectionSpeed } from './utils/measure-connection-speed';
 import { RateLimiter } from './local-rate-limiting/rate-limiter';
 import { Logger } from './logger/logger';
 import { setLocalStorage } from './storage/storage-helpers';
-import { getIdentifier } from './utils/identity-helpers';
 import { VERSION, REFRESH_INTERVAL } from './constants';
 import { getS3SignedUrls, scrapeUrl } from './utils/scraping-helpers';
 import { putHTMLToSigned, putHTMLVisualizerToSigned, putMarkdownToSigned, updateDynamo } from './utils/put-to-signed';
 import { ScrapeRequest } from './utils/scrape-request';
-import os from 'os'; // Import the os module
+import os from 'os';
 
 export class WebSocketManager {
     private static instance: WebSocketManager;
@@ -159,7 +158,14 @@ export class WebSocketManager {
     }
 
     private async handleReconnection(): Promise<void> {
-        if (this.reconnectAttempts !== -1 /* force close */ &&  this.reconnectAttempts < this.maxReconnectAttempts) {
+        /* force close */
+        if ( this.reconnectAttempts !== -1 ){
+           
+            this.reconnectAttempts = 0;
+            return ;
+        }
+
+        if ( this.reconnectAttempts < this.maxReconnectAttempts) {
             this.reconnectAttempts++;
             Logger.log(`[WebSocketManager]: Attempting to reconnect (${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
             setTimeout(() => this.initialize(this.identifier), this.reconnectDelay);
