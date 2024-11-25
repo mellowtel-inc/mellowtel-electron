@@ -144,7 +144,7 @@ export class WebSocketManager {
 
     private async handleReconnection(): Promise<void> {
         /* force close */
-        if (this.reconnectAttempts !== -1) {
+        if (this.reconnectAttempts === -1) {
 
             this.reconnectAttempts = 0;
             return;
