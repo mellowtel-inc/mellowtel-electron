@@ -9,7 +9,6 @@ export async function MeasureConnectionSpeed(): Promise<number> {
     Logger.log("[MeasureConnectionSpeed]: Running speed test...");
 
     const cloudSpeed = await dynamicImport('@cloudflare/speedtest')
-    console.log(cloudSpeed.default)
     const speedTest = new cloudSpeed.default({
       autoStart: false,
       measurements: [{ type: "download", bytes: 10e6, count: 1 }],

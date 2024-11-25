@@ -30,7 +30,6 @@ export class WebSocketManager {
     }
 
     public async initialize(identifier: string): Promise<boolean> {
-        console.log(`this ws: ${this.ws}`);
         this.identifier = identifier;
 
         if (this.ws !== null) {
