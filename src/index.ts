@@ -3,8 +3,8 @@ import { Logger } from "./logger/logger";
 import { WebSocketManager } from "./websockets";
 import { getLocalStorage, setLocalStorage } from "./storage/storage-helpers";
 import { BrowserWindow } from 'electron'
-import { showConsentSettings } from "./dialogs/consent-setttings";
-import { showConsentDialog } from "./dialogs/consent-dialog";
+import { showConsentSettings } from "./consent/consent-setttings";
+import { showConsentDialog } from "./consent/consent-dialog";
 
 const OPT_IN_STATUS_KEY = "mellowtel_opt_in_status";
 

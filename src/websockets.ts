@@ -2,7 +2,7 @@ import WebSocket from 'isomorphic-ws';
 import { MeasureConnectionSpeed } from './utils/measure-connection-speed';
 import { RateLimiter } from './local-rate-limiting/rate-limiter';
 import { Logger } from './logger/logger';
-import { VERSION } from './constants';
+import { VERSION } from './utils/constants';
 import { getS3SignedUrls, scrapeUrl } from './utils/scraping-helpers';
 import { putHTMLToSigned, putHTMLVisualizerToSigned, putMarkdownToSigned, updateDynamo } from './utils/put-to-signed';
 import { ScrapeRequest } from './utils/scrape-request';
