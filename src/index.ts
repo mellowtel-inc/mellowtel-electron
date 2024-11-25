@@ -21,26 +21,27 @@ export default class MellowtelSDK {
 
   /**
    * Creates an instance of MellowtelSDK.
-   * @param publishableKey - The publishable key for the SDK.
+   * @param configurationKey - Your configuration key for the SDK received via email.
    * @param options - Optional configuration options.
    */
-  constructor(publishableKey: string, options?: MellowtelSDKOptions) {
-    this.configurationKey = publishableKey;
+  constructor(configurationKey: string, options?: MellowtelSDKOptions) {
+    this.configurationKey = configurationKey;
     this.options = options;
     this.disableLogs = options?.disableLogs !== undefined ? options.disableLogs : true;
     Logger.disableLogs = this.disableLogs;
-    this.nodeId = getOrGenerateIdentifier(publishableKey);
+    this.nodeId = getOrGenerateIdentifier(configurationKey);
     Logger.log(this.nodeId);
   }
 
   /**
-   * Initializes the SDK.
+   * Signals Mellowtel to start operating if consent is provided.
+   * 
    * @returns Promise<void>
-   * @throws Error if the publishableKey is undefined, null, or empty.
+   * @throws Error if the configuration key is empty.
    */
   public async init(): Promise<void> {
     if (!this.configurationKey) {
-      throw new Error("publishableKey is undefined, null, or empty");
+      throw new Error("configurationKey is undefined, null, or empty");
     }
 
     if (!this.getOptInStatus()) {
@@ -53,12 +54,19 @@ export default class MellowtelSDK {
   }
 
   /**
-   * Requests user consent.
+   * Requests user consent by showing a dialog explaining 
+   * about Mellowtel and the incentive for providing consent.
+   * 
+   * Only shown once until consent has been provided or denied.
+   * 
    * @param window - The Electron BrowserWindow instance.
    * @param incentive - The incentive to show in the consent dialog.
-   * @returns Promise<void>
+   * @returns Promise<boolean | undefined> - Returns true if the user provided consent, false if denied, and undefined if consent was already provided.
    */
-  public async requestConsent(window: BrowserWindow, incentive: string): Promise<void> {
+  public async requestConsent(
+    window: BrowserWindow,
+    incentive: string,
+  ): Promise<boolean | undefined> {
     if (getLocalStorage(OPT_IN_STATUS_KEY) == undefined) {
       let result = await showConsentDialog({
         incentive: incentive,
@@ -66,14 +74,18 @@ export default class MellowtelSDK {
         declineButtonText: "Later",
         parentWindow: window!
       });
+
       setLocalStorage(OPT_IN_STATUS_KEY, result);
+      return result;
     } else {
       Logger.log("Consent already provided");
+      return undefined;
     }
   }
 
   /**
-   * Shows the consent settings dialog.
+   * Shows the consent settings dialog for the user to manage their consent.
+   * 
    * @param window - The Electron BrowserWindow instance.
    * @returns Promise<void>
    */
@@ -102,7 +114,7 @@ export default class MellowtelSDK {
   }
 
   /**
-   * Opts in to the service and initializes WebSocket if not already initialized.
+   * Manually opts in the user to the service from your own interface.
    * @returns Promise<void>
    */
   public async optIn(): Promise<void> {
@@ -111,7 +123,7 @@ export default class MellowtelSDK {
   }
 
   /**
-   * Opts out of the service and disconnects WebSocket if connected.
+   * Manually opts out the user from the service from your own interface. Disconnects WebSocket if connected.
    * @returns Promise<void>
    */
   public async optOut(): Promise<void> {
