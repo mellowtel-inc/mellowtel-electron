@@ -1,6 +1,6 @@
 import { getLocalStorage, setLocalStorage } from "../storage/storage-helpers";
 import { Logger } from "../logger/logger";
-import { MAX_DAILY_RATE as DEFAULT_MAX_DAILY_RATE } from "../utils/constants";
+import { MAX_DAILY_RATE as DEFAULT_MAX_DAILY_RATE } from "../constants";
 
 export class RateLimiter {
   private static MAX_DAILY_RATE: number = DEFAULT_MAX_DAILY_RATE;

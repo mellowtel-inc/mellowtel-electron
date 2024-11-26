@@ -17,6 +17,6 @@
     "typescript": "^5.7.2"
   },
   "dependencies": {
-    "mellowtel-electron": "^700.0.0"
+    "mellowtel-electron": "file:.yalc/mellowtel-electron"
   }
 }
