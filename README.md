@@ -17,41 +17,41 @@ yarn add github:username/mellowtel-electron
 
 ### TypeScript
 ```ts
-import MellowtelSDK from 'mellowtel-electron';
+import Mellowtel from 'mellowtel-electron';
 import { BrowserWindow } from 'electron';
 
-const sdk = new MellowtelSDK('configuration-key');
+const mellowtel = new Mellowtel('configuration-key');
 
 const window = new BrowserWindow();
-let consent = await sdk.requestConsent(/*browser window*/, "Get Premium Free");
+let consent = await mellowtel.requestConsent(/*browser window*/, "Get Premium Free");
 if (consent){
     // Activate if any rewards for opt-in user
 }
-await sdk.init();
+await mellowtel.init();
 
 // Show consent settings dialog
-await sdk.showConsentSettings(window);
+await mellowtel.showConsentSettings(window);
 ```
 
 ### JavaScript
 
 ```js
-const MellowtelSDK = require('mellowtel-electron').default;
+const Mellowtel = require('mellowtel-electron').default;
 const { BrowserWindow } = require('electron');
 
-const sdk = new MellowtelSDK('configuration-key');
+const mellowtel = new Mellowtel('configuration-key');
 
 // Request user consent
-sdk.requestConsent(/*browser window*/, "Get Premium Free")
+mellowtel.requestConsent(/*browser window*/, "Get Premium Free")
 .then(consent => {
     if (consent){
         // Activate if any rewards for opt-in user
     } 
-    sdk.init();
+    mellowtel.init();
 })
 
 // Show consent settings dialog
-// return sdk.showConsentSettings(window);
+// return mellowtel.showConsentSettings(window);
 ```
 
 ## Manual Opt-In and Opt-Out
@@ -60,31 +60,31 @@ If you prefer to use your own interface to manage user consent, you can manually
 
 ### TypeScript
 ```ts
-import MellowtelSDK from 'mellowtel-electron';
+import Mellowtel from 'mellowtel-electron';
 
-const sdk = new MellowtelSDK('configuration-key');
+const mellowtel = new Mellowtel('configuration-key');
 
 // Manually opt-in the user
-if (!sdk.getOptInStatus()){
-    await sdk.optIn();
+if (!mellowtel.getOptInStatus()){
+    await mellowtel.optIn();
 }
-await sdk.init();
+await mellowtel.init();
 
 // Manually opt-out the user
-await sdk.optOut();
+await mellowtel.optOut();
 ```
 
 ### JavaScript
 ```js
-const MellowtelSDK = require('mellowtel-electron').default;
+const Mellowtel = require('mellowtel-electron').default;
 
-const sdk = new MellowtelSDK('configuration-key');
+const mellowtel = new Mellowtel('configuration-key');
 
 // Manually opt-in the user
-if (!sdk.getOptInStatus()){
-    sdk.optIn().then(() => sdk.init());
+if (!mellowtel.getOptInStatus()){
+    mellowtel.optIn().then(() => mellowtel.init());
 }
 
 // Manually opt-out the user
-sdk.optOut();
+mellowtel.optOut();
 ```

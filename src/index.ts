@@ -8,14 +8,14 @@ import { showConsentDialog } from "./consent/consent-dialog";
 
 const OPT_IN_STATUS_KEY = "mellowtel_opt_in_status";
 
-interface MellowtelSDKOptions {
+interface MellowtelOptions {
   disableLogs: boolean
 }
 
-export default class MellowtelSDK {
+export default class Mellowtel {
   private configurationKey: string;
   private nodeId: string;
-  private options?: MellowtelSDKOptions;
+  private options?: MellowtelOptions;
   private disableLogs: boolean = true;
   private wsManager: WebSocketManager = WebSocketManager.getInstance();
 
@@ -24,7 +24,7 @@ export default class MellowtelSDK {
    * @param configurationKey - Your configuration key for the SDK received via email.
    * @param options - Optional configuration options.
    */
-  constructor(configurationKey: string, options?: MellowtelSDKOptions) {
+  constructor(configurationKey: string, options?: MellowtelOptions) {
     this.configurationKey = configurationKey;
     this.options = options;
     this.disableLogs = options?.disableLogs !== undefined ? options.disableLogs : true;
@@ -50,7 +50,7 @@ export default class MellowtelSDK {
     }
 
     await this.wsManager.initialize(this.nodeId);
-    Logger.log("Mellowtel SDK initialized");
+    Logger.log("Mellowtel initialized");
   }
 
   /**
