@@ -1,5 +1,5 @@
 import { app, BrowserWindow } from 'electron';
-import MellowtelSDK from 'mellowtel-electron';
+import Mellowtel from 'mellowtel-electron';
 
 function createWindow(): BrowserWindow {
   // Create the browser window
@@ -20,12 +20,12 @@ function createWindow(): BrowserWindow {
 app.whenReady().then(async () => {
   let win = createWindow();
   
-  const sdk: MellowtelSDK = new MellowtelSDK('electrontestkey', {
+  const mellowtel: Mellowtel = new Mellowtel('electrontestkey', {
     disableLogs: false
   });
 
-  await sdk.requestConsent(win, "Get 3 months free")
-  await sdk.init()
+  await mellowtel.requestConsent(win, "Get 3 months free")
+  await mellowtel.init()
 
   // Enable from the settings page.
   // await sdk.showConsentSettings(win);
