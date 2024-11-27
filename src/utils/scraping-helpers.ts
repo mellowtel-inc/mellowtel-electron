@@ -2,7 +2,6 @@ import { BrowserWindow, NativeImage } from 'electron';
 import { Logger } from '../logger/logger';
 import TurndownService from 'turndown';
 import { ScrapeRequest } from './scrape-request';
-import * as fs from 'fs'; // Import the fs module
 
 const delay = (ms: number): Promise<void> => {
     return new Promise(resolve => setTimeout(resolve, ms));
