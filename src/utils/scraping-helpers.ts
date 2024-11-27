@@ -87,11 +87,6 @@ export async function scrapeUrl(scrapeRequest: ScrapeRequest): Promise<{ html: s
                     }
                     screenshot = await win.webContents.capturePage();
                     Logger.log(`[scrapeUrl]: Screenshot captured for ${scrapeRequest.url}`);
-
-                    // Save the screenshot locally for testing
-                    const screenshotBuffer = screenshot.toPNG();
-                    fs.writeFileSync('screenshot.png', screenshotBuffer);
-                    Logger.log(`[scrapeUrl]: Screenshot saved locally as screenshot.png`);
                 }
 
                 // Initialize TurndownService
