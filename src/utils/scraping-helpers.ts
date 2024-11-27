@@ -60,8 +60,8 @@ export async function scrapeUrl(scrapeRequest: ScrapeRequest): Promise<{ html: s
                 Logger.log(`[scrapeUrl]: Scraped content from ${scrapeRequest.url}`);
 
                 let screenshot: NativeImage | undefined;
-                if (true) {
-                    if (true) {
+                if (scrapeRequest.htmlVisualizer) {
+                    if (scrapeRequest.fullpageScreenshot) {
                         // Scroll to the bottom of the page
                         await win.webContents.executeJavaScript(`
                             (function() {
@@ -70,7 +70,7 @@ export async function scrapeUrl(scrapeRequest: ScrapeRequest): Promise<{ html: s
                                     window.scrollTo(0, scrollHeight);
                                     setTimeout(() => {
                                         resolve();
-                                    }, 1000); // Wait for 2 seconds to allow lazy-loaded content to appear
+                                    }, 1000); 
                                 });
                             })();
                         `);
@@ -81,7 +81,7 @@ export async function scrapeUrl(scrapeRequest: ScrapeRequest): Promise<{ html: s
                                 height: document.documentElement.scrollHeight 
                             })
                         `);
-                        console.log(`width: ${width} height: ${height}`);
+                        Logger.log(`Full page width: ${width} height: ${height}`);
                         win.setContentSize(width, height);
                         await delay(100); // Wait for precautionary purpose
                     }

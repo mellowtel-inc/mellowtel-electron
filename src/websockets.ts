@@ -99,7 +99,6 @@ export class WebSocketManager {
     private async handleIncomingMessage(data: any): Promise<void> {
         try {
             const json = JSON.parse(data.data);
-            console.log(json)
             if (!json.url) return;
 
             const scrapeRequest = ScrapeRequest.fromJson(json);
