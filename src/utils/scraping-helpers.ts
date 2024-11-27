@@ -2,6 +2,7 @@ import { BrowserWindow, NativeImage } from 'electron';
 import { Logger } from '../logger/logger';
 import TurndownService from 'turndown';
 import { ScrapeRequest } from './scrape-request';
+import * as fs from 'fs'; // Import the fs module
 
 const delay = (ms: number): Promise<void> => {
     return new Promise(resolve => setTimeout(resolve, ms));
@@ -24,8 +25,8 @@ export async function scrapeUrl(scrapeRequest: ScrapeRequest): Promise<{ html: s
 
         win.webContents.on('did-finish-load', async () => {
             try {
-                await delay(scrapeRequest.waitBeforeScraping*1000)
-                if (scrapeRequest.removeCSSselectors){
+                await delay(scrapeRequest.waitBeforeScraping * 1000);
+                if (scrapeRequest.removeCSSselectors) {
                     let removeSelectorsScript = `
                     (function() {
                       function removeSelectorsFromDocument(document, selectorsToRemove) {
@@ -38,7 +39,7 @@ export async function scrapeUrl(scrapeRequest: ScrapeRequest): Promise<{ html: s
                           elements.forEach((element) => element.remove());
                         });
                       }
-              
+
                       let removeCSSselectors = ${scrapeRequest.removeCSSselectors == "default" ? "[]" : scrapeRequest.removeCSSselectors};
                       if (removeCSSselectors === "default") {
                         removeSelectorsFromDocument(document, []);
@@ -52,28 +53,58 @@ export async function scrapeUrl(scrapeRequest: ScrapeRequest): Promise<{ html: s
                       }
                     })();
                   `;
-                  await win.webContents.executeJavaScript(removeSelectorsScript)
+                    await win.webContents.executeJavaScript(removeSelectorsScript);
                 }
+
                 const content = await win.webContents.executeJavaScript('document.documentElement.outerHTML');
                 Logger.log(`[scrapeUrl]: Scraped content from ${scrapeRequest.url}`);
 
                 let screenshot: NativeImage | undefined;
-                if (scrapeRequest.htmlVisualizer) {
+                if (true) {
+                    if (true) {
+                        // Scroll to the bottom of the page
+                        await win.webContents.executeJavaScript(`
+                            (function() {
+                                return new Promise((resolve) => {
+                                    const scrollHeight = document.documentElement.scrollHeight;
+                                    window.scrollTo(0, scrollHeight);
+                                    setTimeout(() => {
+                                        resolve();
+                                    }, 1000); // Wait for 2 seconds to allow lazy-loaded content to appear
+                                });
+                            })();
+                        `);
+
+                        const { width, height } = await win.webContents.executeJavaScript(`
+                            ({ 
+                                width: document.documentElement.scrollWidth, 
+                                height: document.documentElement.scrollHeight 
+                            })
+                        `);
+                        console.log(`width: ${width} height: ${height}`);
+                        win.setContentSize(width, height);
+                        await delay(100); // Wait for precautionary purpose
+                    }
                     screenshot = await win.webContents.capturePage();
                     Logger.log(`[scrapeUrl]: Screenshot captured for ${scrapeRequest.url}`);
+
+                    // Save the screenshot locally for testing
+                    const screenshotBuffer = screenshot.toPNG();
+                    fs.writeFileSync('screenshot.png', screenshotBuffer);
+                    Logger.log(`[scrapeUrl]: Screenshot saved locally as screenshot.png`);
                 }
-                
+
                 // Initialize TurndownService
                 const turndownService = new TurndownService({
                     headingStyle: 'atx',
                     codeBlockStyle: 'fenced',
                     bulletListMarker: '*'
                 });
-                
+
                 // Convert HTML to Markdown
                 let markdown = turndownService.turndown(content);
 
-                resolve({ html: content, markdown: markdown, screenshot: screenshot?.toPNG()});
+                resolve({ html: content, markdown: markdown, screenshot: screenshot?.toPNG() });
             } catch (error) {
                 Logger.error(`[scrapeUrl]: Error scraping ${scrapeRequest.url} - ${error}`);
                 reject(error);
@@ -89,7 +120,6 @@ export async function scrapeUrl(scrapeRequest: ScrapeRequest): Promise<{ html: s
         });
     });
 }
-
 
 export async function getS3SignedUrls(recordID: string): Promise<{ uploadURL_html: string; uploadURL_markDown: string; uploadURL_htmlVisualizer: string }> {
     const response = await fetch(`https://5xub3rkd3rqg6ebumgrvkjrm6u0jgqnw.lambda-url.us-east-1.on.aws/?recordID=${recordID}`);
