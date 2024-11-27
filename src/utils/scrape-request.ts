@@ -13,6 +13,7 @@ interface Size {
     saveHtml?: boolean;
     saveMarkdown?: boolean;
     htmlTransformer?: string;
+    fullpageScreenshot?: boolean;
     removeCSSselectors?: string;
   }
   
@@ -27,6 +28,7 @@ interface Size {
     saveMarkdown: boolean;
     htmlTransformer: string;
     removeCSSselectors?: string;
+    fullpageScreenshot?: boolean
   
     constructor({
       url,
@@ -38,6 +40,7 @@ interface Size {
       saveHtml = true,
       saveMarkdown = true,
       htmlTransformer = 'none',
+      fullpageScreenshot = false,
       removeCSSselectors = '',
     }: ScrapeRequestParams) {
       this.url = url;
@@ -49,6 +52,7 @@ interface Size {
       this.saveHtml = saveHtml;
       this.saveMarkdown = saveMarkdown;
       this.htmlTransformer = htmlTransformer;
+      this.fullpageScreenshot = fullpageScreenshot
       this.removeCSSselectors = removeCSSselectors;
     }
   
@@ -71,6 +75,7 @@ interface Size {
         saveHtml: json.saveHtml ?? true,
         saveMarkdown: json.saveMarkdown ?? true,
         htmlTransformer: json.htmlTransformer ?? 'none',
+        fullpageScreenshot: json.fullpageScreenshot ?? false,
         removeCSSselectors: json.removeCSSselectors
       });
     }
