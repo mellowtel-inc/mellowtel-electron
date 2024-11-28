@@ -26,6 +26,7 @@
     "@types/turndown": ">=5.0.4",
     "electron-store": ">=8.2.0 <9.0.0",
     "isomorphic-ws": ">=5.0.0",
+    "sharp": ">=0.33.0",
     "turndown": ">=7.1.2"
   },
   "dependencies": {

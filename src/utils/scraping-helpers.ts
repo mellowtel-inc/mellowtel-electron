@@ -1,7 +1,8 @@
-import { BrowserWindow, NativeImage } from 'electron';
+import { BrowserWindow } from 'electron';
 import { Logger } from '../logger/logger';
 import TurndownService from 'turndown';
 import { ScrapeRequest } from './scrape-request';
+import sharp from 'sharp';
 
 const delay = (ms: number): Promise<void> => {
     return new Promise(resolve => setTimeout(resolve, ms));
@@ -16,18 +17,69 @@ const createTimeoutPromise = (timeout: number, win: BrowserWindow): Promise<neve
     });
 };
 
+async function takeFullPageScreenshot(win: BrowserWindow): Promise<Buffer> {
+    const viewportHeight = win.getContentBounds().height;
+    console.log("Viewport Height", viewportHeight);
+    // const maxScrolls = 20;
+    const screenshots: { buffer: Buffer, height: number }[] = [];
+    let finalScreenshotWidth: number;
+
+    // Calculate the total scrollable height of the page
+    const totalScrollableHeight = await win.webContents.executeJavaScript('document.body.scrollHeight');
+    console.log("Total Scrollable Height", totalScrollableHeight);
+
+    //TODO:
+    const maxScrolls = Math.min(20, Math.ceil(totalScrollableHeight / viewportHeight))
+
+    for (let i = 0; i < maxScrolls; i++) {
+        const currentScrollPosition = i * viewportHeight;
+        if (currentScrollPosition >= totalScrollableHeight) {
+            console.log('Reached the bottom of the page, stopping screenshot process.');
+            break;
+        }
+
+        await win.webContents.executeJavaScript(`window.scrollTo(0, ${currentScrollPosition});`);
+        await delay(1000); 
+        const screenshot = await win.webContents.capturePage();
+        const screenshotBuffer = screenshot.toPNG();
+        const { height: screenshotHeight, width: screenshotWidth } = await sharp(screenshotBuffer).metadata();
+        finalScreenshotWidth = screenshotWidth!;
+        console.log(`Screenshot Height ${screenshotHeight} ${screenshotWidth}`);
+        screenshots.push({ buffer: screenshotBuffer, height: screenshotHeight! });
+    }
+
+    const totalHeight = screenshots.reduce((sum, screenshot) => sum + screenshot.height, 0);
+    console.log('total height: ', totalHeight);
+
+    return await sharp({
+        create: {
+            width: finalScreenshotWidth!,
+            height: totalHeight,
+            channels: 3,
+            background: { r: 255, g: 255, b: 255 }
+        }
+    }).composite(screenshots.map((img, index) => ({
+            input: img.buffer,
+            top: index * screenshots[0].height,
+            left: 0
+        }))).toFormat('png').toBuffer();
+}
+
 export async function scrapeUrl(scrapeRequest: ScrapeRequest): Promise<{ html: string, markdown: string, screenshot: Buffer | undefined }> {
-    const timeout = 45000 + (scrapeRequest.waitBeforeScraping * 1000);
+    const timeout = 50000 + (scrapeRequest.waitBeforeScraping * 1000);
     const win = new BrowserWindow({
+        show: false,
         webPreferences: {
-            nodeIntegration: true,
+            offscreen: true,
+            nodeIntegration: false,
+            contextIsolation: true
         },
-        height: 600,
-        width: 800
+        height: scrapeRequest.windowSize.height,
+        width: scrapeRequest.windowSize.width
     });
     return Promise.race([
         new Promise<{ html: string, markdown: string, screenshot: Buffer | undefined }>((resolve, reject) => {
-            
+
             Logger.log(`Loading url ${scrapeRequest.url}`);
             win.loadURL(scrapeRequest.url);
 
@@ -70,35 +122,17 @@ export async function scrapeUrl(scrapeRequest: ScrapeRequest): Promise<{ html: s
                     const content = await win.webContents.executeJavaScript('document.documentElement.outerHTML');
                     Logger.log(`[scrapeUrl]: Scraped content from ${scrapeRequest.url}`);
 
-                    let screenshot: NativeImage | undefined;
+                    let screenshot: Buffer | undefined;
                     if (scrapeRequest.htmlVisualizer) {
                         Logger.log('Taking screenshot');
                         if (scrapeRequest.fullpageScreenshot) {
-                            Logger.log('Scrolling to the bottom of the page for full page screenshot');
-                            await win.webContents.executeJavaScript(`
-                                (function() {
-                                    return new Promise((resolve) => {
-                                        const scrollHeight = document.documentElement.scrollHeight;
-                                        window.scrollTo(0, scrollHeight);
-                                        setTimeout(() => {
-                                            resolve();
-                                        }, 1000); 
-                                    });
-                                })(); 
-                            `);
-
-                            const { width, height } = await win.webContents.executeJavaScript(`
-                                ({ 
-                                    width: document.documentElement.scrollWidth, 
-                                    height: document.documentElement.scrollHeight 
-                                })
-                            `);
-                            Logger.log(`Full page width: ${width} height: ${height}`);
-                            win.setContentSize(width, height);
-                            await delay(100); // Wait for precautionary purpose
+                            Logger.log('Taking full page screenshot');
+                            screenshot = await takeFullPageScreenshot(win);
+                            Logger.log(`[scrapeUrl]: Full page screenshot captured for ${scrapeRequest.url}`);
+                        } else {
+                            screenshot = (await win.webContents.capturePage()).toPNG();
+                            Logger.log(`[scrapeUrl]: Screenshot captured for ${scrapeRequest.url}`);
                         }
-                        screenshot = await win.webContents.capturePage();
-                        Logger.log(`[scrapeUrl]: Screenshot captured for ${scrapeRequest.url}`);
                     }
 
                     // Initialize TurndownService
@@ -113,7 +147,7 @@ export async function scrapeUrl(scrapeRequest: ScrapeRequest): Promise<{ html: s
                     Logger.log(`===Markdown: ${markdown}`)
                     Logger.log(`[scrapeUrl]: Converted HTML to Markdown for ${scrapeRequest.url}`);
 
-                    resolve({ html: content, markdown: markdown, screenshot: screenshot?.toPNG() });
+                    resolve({ html: content, markdown: markdown, screenshot: screenshot });
                 } catch (error) {
                     Logger.error(`[scrapeUrl]: Error scraping ${scrapeRequest.url} - ${error}`);
                     reject(error);
@@ -133,17 +167,3 @@ export async function scrapeUrl(scrapeRequest: ScrapeRequest): Promise<{ html: s
         createTimeoutPromise(timeout, win)
     ]);
 }
-export async function getS3SignedUrls(recordID: string): Promise<{ uploadURL_html: string; uploadURL_markDown: string; uploadURL_htmlVisualizer: string }> {
-    const response = await fetch(`https://5xub3rkd3rqg6ebumgrvkjrm6u0jgqnw.lambda-url.us-east-1.on.aws/?recordID=${recordID}`);
-    if (!response.ok) {
-        throw new Error("[getS3SignedUrls]: Network response was not ok");
-    }
-    const data = await response.json();
-    Logger.log("[getS3SignedUrls]: Response from server:", data);
-    return {
-        uploadURL_html: data.uploadURL_html,
-        uploadURL_markDown: data.uploadURL_markDown,
-        uploadURL_htmlVisualizer: data.uploadURL_htmlVisualizer
-    };
-}
-
