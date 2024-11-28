@@ -1,5 +1,20 @@
 import { Logger } from "../logger/logger";
 
+
+export async function getS3SignedUrls(recordID: string): Promise<{ uploadURL_html: string; uploadURL_markDown: string; uploadURL_htmlVisualizer: string }> {
+  const response = await fetch(`https://5xub3rkd3rqg6ebumgrvkjrm6u0jgqnw.lambda-url.us-east-1.on.aws/?recordID=${recordID}`);
+  if (!response.ok) {
+      throw new Error("[getS3SignedUrls]: Network response was not ok");
+  }
+  const data = await response.json();
+  Logger.log("[getS3SignedUrls]: Response from server:", data);
+  return {
+      uploadURL_html: data.uploadURL_html,
+      uploadURL_markDown: data.uploadURL_markDown,
+      uploadURL_htmlVisualizer: data.uploadURL_htmlVisualizer
+  };
+}
+
 export function putHTMLToSigned(htmlURL_signed: string, content: string) {
   return new Promise((resolve) => {
     fetch(htmlURL_signed, {
