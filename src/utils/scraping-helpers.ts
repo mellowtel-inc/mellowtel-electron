@@ -19,22 +19,19 @@ const createTimeoutPromise = (timeout: number, win: BrowserWindow): Promise<neve
 
 async function takeFullPageScreenshot(win: BrowserWindow): Promise<Buffer> {
     const viewportHeight = win.getContentBounds().height;
-    console.log("Viewport Height", viewportHeight);
-    // const maxScrolls = 20;
+
     const screenshots: { buffer: Buffer, height: number }[] = [];
     let finalScreenshotWidth: number;
 
     // Calculate the total scrollable height of the page
     const totalScrollableHeight = await win.webContents.executeJavaScript('document.body.scrollHeight');
-    console.log("Total Scrollable Height", totalScrollableHeight);
 
-    //TODO:
     const maxScrolls = Math.min(20, Math.ceil(totalScrollableHeight / viewportHeight))
 
     for (let i = 0; i < maxScrolls; i++) {
         const currentScrollPosition = i * viewportHeight;
         if (currentScrollPosition >= totalScrollableHeight) {
-            console.log('Reached the bottom of the page, stopping screenshot process.');
+            Logger.log('Reached the bottom of the page, stopping screenshot process.');
             break;
         }
 
@@ -44,12 +41,10 @@ async function takeFullPageScreenshot(win: BrowserWindow): Promise<Buffer> {
         const screenshotBuffer = screenshot.toPNG();
         const { height: screenshotHeight, width: screenshotWidth } = await sharp(screenshotBuffer).metadata();
         finalScreenshotWidth = screenshotWidth!;
-        console.log(`Screenshot Height ${screenshotHeight} ${screenshotWidth}`);
         screenshots.push({ buffer: screenshotBuffer, height: screenshotHeight! });
     }
 
     const totalHeight = screenshots.reduce((sum, screenshot) => sum + screenshot.height, 0);
-    console.log('total height: ', totalHeight);
 
     return await sharp({
         create: {
@@ -62,13 +57,16 @@ async function takeFullPageScreenshot(win: BrowserWindow): Promise<Buffer> {
             input: img.buffer,
             top: index * screenshots[0].height,
             left: 0
-        }))).toFormat('png').toBuffer();
+        }))).toFormat('png', {
+            compressionLevel: 9,
+            quality: 40
+        }).toBuffer();
 }
 
 export async function scrapeUrl(scrapeRequest: ScrapeRequest): Promise<{ html: string, markdown: string, screenshot: Buffer | undefined }> {
     const timeout = 50000 + (scrapeRequest.waitBeforeScraping * 1000);
     const win = new BrowserWindow({
-        show: false,
+        show: true,
         webPreferences: {
             offscreen: true,
             nodeIntegration: false,
@@ -101,7 +99,6 @@ export async function scrapeUrl(scrapeRequest: ScrapeRequest): Promise<{ html: s
                                 const elements = document.querySelectorAll(selector);
                                 elements.forEach((element) => element.remove());
                                 });
-                                return 1 + 1
                             }
 
                             let removeCSSselectors = "${scrapeRequest.removeCSSselectors ?? 'default'}";
@@ -115,8 +112,8 @@ export async function scrapeUrl(scrapeRequest: ScrapeRequest): Promise<{ html: s
                                 console.log("Error parsing removeCSSselectors =>", e);
                                 }
                             }`;
-                        let result = await win.webContents.executeJavaScript(removeSelectorsScript);
-                        Logger.log(`CSS selectors removed ${result}`);
+                        await win.webContents.executeJavaScript(removeSelectorsScript);
+                        Logger.log(`CSS selectors removed`);
                     }
 
                     const content = await win.webContents.executeJavaScript('document.documentElement.outerHTML');
@@ -152,7 +149,7 @@ export async function scrapeUrl(scrapeRequest: ScrapeRequest): Promise<{ html: s
                     Logger.error(`[scrapeUrl]: Error scraping ${scrapeRequest.url} - ${error}`);
                     reject(error);
                 } finally {
-                    if(!win.isDestroyed){
+                    if(!win.isDestroyed()){
                         win.close();
                     }
                     Logger.log(`[scrapeUrl]: Browser window closed for ${scrapeRequest.url}`);
