@@ -11,7 +11,9 @@ const delay = (ms: number): Promise<void> => {
 const createTimeoutPromise = (timeout: number, win: BrowserWindow): Promise<never> => {
     return new Promise((_, reject) => {
         setTimeout(() => {
-            win.close();
+            if(!win.isDestroyed()){
+                win.close();
+            }
             reject(new Error(`Scraping timed out after ${timeout} milliseconds`));
         }, timeout);
     });
@@ -66,7 +68,7 @@ async function takeFullPageScreenshot(win: BrowserWindow): Promise<Buffer> {
 export async function scrapeUrl(scrapeRequest: ScrapeRequest): Promise<{ html: string, markdown: string, screenshot: Buffer | undefined }> {
     const timeout = 50000 + (scrapeRequest.waitBeforeScraping * 1000);
     const win = new BrowserWindow({
-        show: true,
+        show: false,
         webPreferences: {
             offscreen: true,
             nodeIntegration: false,
