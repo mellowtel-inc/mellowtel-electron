@@ -174,6 +174,7 @@ export async function scrapeUrl(scrapeRequest: ScrapeRequest): Promise<{ html: s
                     if (scrapeRequest.actions && scrapeRequest.actions.length > 0) {
                         Logger.log(`Executing actions: ${JSON.stringify(scrapeRequest.actions)}`);
                         for (const action of scrapeRequest.actions) {
+                            Logger.log(`Executing action: ${JSON.stringify(action)}`);
                             await executeAction(action, win);
                         }
                         Logger.log(`Actions executed`);

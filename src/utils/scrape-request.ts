@@ -54,7 +54,7 @@ export class ScrapeRequest {
         htmlTransformer = 'none',
         fullpageScreenshot = false,
         removeCSSselectors = '',
-        actions = [] // Initialize actions with an empty array by default
+        actions = []
     }: ScrapeRequestParams) {
         this.url = url;
         this.orgId = orgId;
@@ -91,7 +91,7 @@ export class ScrapeRequest {
             htmlTransformer: json.htmlTransformer ?? 'none',
             fullpageScreenshot: json.fullpageScreenshot ?? false,
             removeCSSselectors: json.removeCSSselectors,
-            actions: json.actions ?? [] // Parse actions from JSON object
+            actions: json.actions ? JSON.parse(json.actions) : []
         });
     }
 }
