@@ -1,7 +1,7 @@
 import { BrowserWindow } from 'electron';
 import { Logger } from '../logger/logger';
 import TurndownService from 'turndown';
-import { ScrapeRequest } from './scrape-request';
+import { Action, FormField, ScrapeRequest } from './scrape-request';
 import sharp from 'sharp';
 
 const delay = (ms: number): Promise<void> => {
@@ -25,7 +25,6 @@ async function takeFullPageScreenshot(win: BrowserWindow): Promise<Buffer> {
     const screenshots: { buffer: Buffer, height: number }[] = [];
     let finalScreenshotWidth: number;
 
-    // Calculate the total scrollable height of the page
     const totalScrollableHeight = await win.webContents.executeJavaScript('document.body.scrollHeight');
 
     const maxScrolls = Math.min(20, Math.ceil(totalScrollableHeight / viewportHeight))
@@ -63,6 +62,60 @@ async function takeFullPageScreenshot(win: BrowserWindow): Promise<Buffer> {
             compressionLevel: 9,
             quality: 40
         }).toBuffer();
+}
+
+async function executeAction(action: Action, win: BrowserWindow): Promise<void> {
+    switch (action.type) {
+        case "wait":
+            await delay(action.milliseconds);
+            break;
+        case "click":
+            await win.webContents.executeJavaScript(`document.querySelector("${action.selector}").click();`);
+            break;
+        case "write":
+            await win.webContents.executeJavaScript(`
+                const activeElement = document.activeElement;
+                if (activeElement && "value" in activeElement) {
+                    const start = activeElement.selectionStart || 0;
+                    const end = activeElement.selectionEnd || 0;
+                    activeElement.value = activeElement.value.substring(0, start) + "${action.text}" + activeElement.value.substring(end);
+                    activeElement.selectionStart = activeElement.selectionEnd = start + "${action.text}".length;
+                }
+            `);
+            break;
+        case "fill_input":
+            await win.webContents.executeJavaScript(`document.querySelector("${action.selector}").value = "${action.value}";`);
+            break;
+        case "fill_textarea":
+            await win.webContents.executeJavaScript(`document.querySelector("${action.selector}").value = "${action.value}";`);
+            break;
+        case "select":
+            await win.webContents.executeJavaScript(`document.querySelector("${action.selector}").value = "${action.value}";`);
+            break;
+        case "fill_form":
+            await win.webContents.executeJavaScript(`
+                const formElement = document.querySelector("${action.selector}");
+                if (formElement) {
+                    const formData = new FormData(formElement);
+                    ${action.fields.map((field: FormField) => `formData.set("${field.name}", "${field.value}");`).join('')}
+                }
+            `);
+            break;
+        case "press":
+            await win.webContents.executeJavaScript(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "${action.key}" }));`);
+            break;
+        case "scroll":
+            await win.webContents.executeJavaScript(`
+                window.scrollBy({
+                    top: ${action.direction === "up" ? -action.amount : action.amount},
+                    left: ${action.direction === "left" ? -action.amount : action.direction === "right" ? action.amount : 0},
+                    behavior: "smooth",
+                });
+            `);
+            break;
+        default:
+            console.warn(`Unknown action type: ${action.type}`);
+    }
 }
 
 export async function scrapeUrl(scrapeRequest: ScrapeRequest): Promise<{ html: string, markdown: string, screenshot: Buffer | undefined }> {
@@ -118,6 +171,15 @@ export async function scrapeUrl(scrapeRequest: ScrapeRequest): Promise<{ html: s
                         Logger.log(`CSS selectors removed`);
                     }
 
+                    if (scrapeRequest.actions && scrapeRequest.actions.length > 0) {
+                        Logger.log(`Executing actions: ${JSON.stringify(scrapeRequest.actions)}`);
+                        for (const action of scrapeRequest.actions) {
+                            Logger.log(`Executing action: ${JSON.stringify(action)}`);
+                            await executeAction(action, win);
+                        }
+                        Logger.log(`Actions executed`);
+                    }
+
                     const content = await win.webContents.executeJavaScript('document.documentElement.outerHTML');
                     Logger.log(`[scrapeUrl]: Scraped content from ${scrapeRequest.url}`);
 
@@ -134,14 +196,12 @@ export async function scrapeUrl(scrapeRequest: ScrapeRequest): Promise<{ html: s
                         }
                     }
 
-                    // Initialize TurndownService
                     const turndownService = new TurndownService({
                         headingStyle: 'atx',
                         codeBlockStyle: 'fenced',
                         bulletListMarker: '*'
                     });
 
-                    // Convert HTML to Markdown
                     let markdown = turndownService.turndown(content);
                     Logger.log(`===Markdown: ${markdown}`)
                     Logger.log(`[scrapeUrl]: Converted HTML to Markdown for ${scrapeRequest.url}`);
