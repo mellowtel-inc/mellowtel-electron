@@ -20,7 +20,7 @@ export class WebSocketManager {
     private pingInterval: NodeJS.Timeout | null = null;
     private pongTimeout: NodeJS.Timeout | null = null;
     private readonly pingIntervalTime: number = 60000; // 60 seconds
-    private readonly pongTimeoutTime: number = this.pingIntervalTime * 2;
+    private readonly pongTimeoutTime: number = this.pingIntervalTime / 2; // receive pong back in half the ping interval time
 
     private constructor() {
         this.identifier = '';
@@ -216,6 +216,7 @@ export class WebSocketManager {
             this.ws.close();
             this.ws = null;
             this.reconnectAttempts = -1;
+            this.stopPing();
         }
     }
 }
