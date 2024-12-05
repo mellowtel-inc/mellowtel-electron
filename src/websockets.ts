@@ -193,7 +193,7 @@ export class WebSocketManager {
 
     private async handleRateLimitReached(): Promise<void> {
         Logger.log("[WebSocketManager]: Rate limit reached, closing connection...");
-        this.disconnect();
+        this.disconnect(true);
     }
 
     private async handleReconnection(): Promise<void> {
@@ -207,15 +207,18 @@ export class WebSocketManager {
         if (this.reconnectAttempts < this.maxReconnectAttempts) {
             this.reconnectAttempts++;
             Logger.log(`[WebSocketManager]: Attempting to reconnect (${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
-            setTimeout(() => this.initialize(this.identifier), this.reconnectDelay);
+            setTimeout(() => {
+                this.disconnect()
+                this.initialize(this.identifier);
+            }, this.reconnectDelay);
         }
     }
 
-    public disconnect(): void {
+    public disconnect(force = false): void {
         if (this.ws) {
             this.ws.close();
             this.ws = null;
-            this.reconnectAttempts = -1;
+            if (force) this.reconnectAttempts = -1;
             this.stopPing();
         }
     }
