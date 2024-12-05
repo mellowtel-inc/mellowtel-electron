@@ -17,6 +17,10 @@ export class WebSocketManager {
     private readonly maxReconnectAttempts: number = 5;
     private readonly reconnectDelay: number = 5000;
     private isConnecting: boolean = false;
+    private pingInterval: NodeJS.Timeout | null = null;
+    private pongTimeout: NodeJS.Timeout | null = null;
+    private readonly pingIntervalTime: number = 60000; // 60 seconds
+    private readonly pongTimeoutTime: number = this.pingIntervalTime * 2;
 
     private constructor() {
         this.identifier = '';
@@ -80,10 +84,12 @@ export class WebSocketManager {
         this.ws.onopen = () => {
             Logger.log("[WebSocketManager]: Connection established");
             this.reconnectAttempts = 0;
+            this.startPing();
         };
 
         this.ws.onclose = () => {
             Logger.log("[WebSocketManager]: Connection closed");
+            this.stopPing();
             this.handleReconnection();
         };
 
@@ -94,6 +100,45 @@ export class WebSocketManager {
         this.ws.onmessage = async (data: any) => {
             await this.handleIncomingMessage(data);
         };
+
+        this.ws.on('pong', () => {
+            Logger.log("[WebSocketManager]: Received pong");
+            this.clearPongTimeout();
+        });
+    }
+
+    private startPing(): void {
+        this.stopPing();
+        this.pingInterval = setInterval(() => {
+            if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                this.ws.ping();
+                this.startPongTimeout();
+            }
+        }, this.pingIntervalTime);
+    }
+
+    private stopPing(): void {
+        if (this.pingInterval) {
+            clearInterval(this.pingInterval);
+            this.pingInterval = null;
+        }
+        this.clearPongTimeout();
+    }
+
+    private startPongTimeout(): void {
+        this.clearPongTimeout();
+        this.pongTimeout = setTimeout(() => {
+            Logger.log("[WebSocketManager]: Pong timeout, attempting to reconnect...");
+            this.disconnect();
+            this.handleReconnection();
+        }, this.pongTimeoutTime);
+    }
+
+    private clearPongTimeout(): void {
+        if (this.pongTimeout) {
+            clearTimeout(this.pongTimeout);
+            this.pongTimeout = null;
+        }
     }
 
     private async handleIncomingMessage(data: any): Promise<void> {
