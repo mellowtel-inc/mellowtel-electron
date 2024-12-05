@@ -119,7 +119,7 @@ async function executeAction(action: Action, win: BrowserWindow): Promise<void> 
 }
 
 export async function scrapeUrl(scrapeRequest: ScrapeRequest): Promise<{ html: string, markdown: string, screenshot: Buffer | undefined }> {
-    const timeout = 50000 + (scrapeRequest.waitBeforeScraping * 1000);
+    const timeout = 60000 + (scrapeRequest.waitBeforeScraping * 1000);
     const win = new BrowserWindow({
         show: false,
         webPreferences: {
@@ -203,7 +203,6 @@ export async function scrapeUrl(scrapeRequest: ScrapeRequest): Promise<{ html: s
                     });
 
                     let markdown = turndownService.turndown(content);
-                    Logger.log(`===Markdown: ${markdown}`)
                     Logger.log(`[scrapeUrl]: Converted HTML to Markdown for ${scrapeRequest.url}`);
 
                     resolve({ html: content, markdown: markdown, screenshot: screenshot });
