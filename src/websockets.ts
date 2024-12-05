@@ -116,15 +116,24 @@ export class WebSocketManager {
     }
 
     private async processScrapeRequest(scrapeRequest: ScrapeRequest): Promise<void> {
-        const scrapedContent = await scrapeUrl(scrapeRequest);
-        const { uploadURL_html, uploadURL_markDown, uploadURL_htmlVisualizer } = await getS3SignedUrls(scrapeRequest.recordID);
+        const [scrapedContent, s3SignedUrls] = await Promise.all([
+            scrapeUrl(scrapeRequest),
+            getS3SignedUrls(scrapeRequest.recordID)
+        ]);
 
-        await putHTMLToSigned(uploadURL_html, scrapedContent.html);
-        await putMarkdownToSigned(uploadURL_markDown, scrapedContent.markdown);
+        const { uploadURL_html, uploadURL_markDown, uploadURL_htmlVisualizer } = s3SignedUrls;
+
+        const putHtmlPromise = putHTMLToSigned(uploadURL_html, scrapedContent.html);
+        const putMarkdownPromise = putMarkdownToSigned(uploadURL_markDown, scrapedContent.markdown);
+
+        const promises = [putHtmlPromise, putMarkdownPromise];
 
         if (scrapedContent.screenshot) {
-            await putHTMLVisualizerToSigned(uploadURL_htmlVisualizer, scrapedContent.screenshot);
+            const putHtmlVisualizerPromise = putHTMLVisualizerToSigned(uploadURL_htmlVisualizer, scrapedContent.screenshot);
+            promises.push(putHtmlVisualizerPromise);
         }
+
+        await Promise.all(promises);
 
         await updateDynamo(
             scrapeRequest.recordID,
