@@ -137,7 +137,7 @@ export async function updateDynamo(
     markdownKey: string = "--",
     htmlVisualizerKey: string = "--",
 ): Promise<void> {
-    Logger.log("📋  updateDynamo - Saving Crawl 📋");
+    Logger.log("📋  updateDynamo - Saving Data 📋");
     Logger.log("RecordID:", recordID);
     Logger.log("URL:", url);
     Logger.log("HTML Transformer:", htmlTransformer);

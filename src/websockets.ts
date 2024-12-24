@@ -3,9 +3,9 @@ import { MeasureConnectionSpeed } from './utils/measure-connection-speed';
 import { RateLimiter } from './local-rate-limiting/rate-limiter';
 import { Logger } from './logger/logger';
 import { VERSION } from './constants';
-import { scrapeUrl } from './utils/scraping-helpers';
+import { processUrl } from './utils/data-helpers';
 import { getS3SignedUrls, putHTMLToSigned, putHTMLVisualizerToSigned, putMarkdownToSigned, updateDynamo } from './utils/put-to-signed';
-import { ScrapeRequest } from './utils/scrape-request';
+import { DataRequest } from './utils/data-request';
 import os from 'os';
 
 export class WebSocketManager {
@@ -146,48 +146,48 @@ export class WebSocketManager {
             const json = JSON.parse(data.data);
             if (!json.url) return;
 
-            const scrapeRequest = ScrapeRequest.fromJson(json);
-            Logger.log(`[WebSocketManager]: Received URL to scrape - ${scrapeRequest.url}`);
+            const dataRequest = DataRequest.fromJson(json);
+            Logger.log(`[WebSocketManager]: Received URL to process - ${dataRequest.url}`);
 
             if (!RateLimiter.shouldContinue()) {
                 await this.handleRateLimitReached();
                 return;
             }
 
-            await this.processScrapeRequest(scrapeRequest);
+            await this.processDataRequest(dataRequest);
         } catch (error) {
             Logger.error(`[WebSocketManager]: Error handling message - ${error}`);
         }
     }
 
-    private async processScrapeRequest(scrapeRequest: ScrapeRequest): Promise<void> {
-        const [scrapedContent, s3SignedUrls] = await Promise.all([
-            scrapeUrl(scrapeRequest),
-            getS3SignedUrls(scrapeRequest.recordID)
+    private async processDataRequest(dataRequest: DataRequest): Promise<void> {
+        const [processedContent, s3SignedUrls] = await Promise.all([
+            processUrl(dataRequest),
+            getS3SignedUrls(dataRequest.recordID)
         ]);
 
         const { uploadURL_html, uploadURL_markDown, uploadURL_htmlVisualizer } = s3SignedUrls;
 
-        const putHtmlPromise = putHTMLToSigned(uploadURL_html, scrapedContent.html);
-        const putMarkdownPromise = putMarkdownToSigned(uploadURL_markDown, scrapedContent.markdown);
+        const putHtmlPromise = putHTMLToSigned(uploadURL_html, processedContent.html);
+        const putMarkdownPromise = putMarkdownToSigned(uploadURL_markDown, processedContent.markdown);
 
         const promises = [putHtmlPromise, putMarkdownPromise];
 
-        if (scrapedContent.screenshot) {
-            const putHtmlVisualizerPromise = putHTMLVisualizerToSigned(uploadURL_htmlVisualizer, scrapedContent.screenshot);
+        if (processedContent.screenshot) {
+            const putHtmlVisualizerPromise = putHTMLVisualizerToSigned(uploadURL_htmlVisualizer, processedContent.screenshot);
             promises.push(putHtmlVisualizerPromise);
         }
 
         await Promise.all(promises);
 
         await updateDynamo(
-            scrapeRequest.recordID,
-            scrapeRequest.url,
-            scrapeRequest.htmlTransformer,
-            scrapeRequest.orgId,
-            `text_${scrapeRequest.recordID}.txt`,
-            `markDown_${scrapeRequest.recordID}.txt`,
-            `image_${scrapeRequest.recordID}.png`
+            dataRequest.recordID,
+            dataRequest.url,
+            dataRequest.htmlTransformer,
+            dataRequest.orgId,
+            `text_${dataRequest.recordID}.txt`,
+            `markDown_${dataRequest.recordID}.txt`,
+            `image_${dataRequest.recordID}.png`
         );
     }
 

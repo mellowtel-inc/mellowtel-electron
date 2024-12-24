@@ -13,7 +13,7 @@ export interface Action {
     [key: string]: any;
 }
 
-interface ScrapeRequestParams {
+interface DataRequestParams {
     url: string;
     orgId: string;
     recordID: string;
@@ -28,7 +28,7 @@ interface ScrapeRequestParams {
     actions?: Action[]; // Add actions as an optional property
 }
 
-export class ScrapeRequest {
+export class DataRequest {
     url: string;
     orgId: string;
     recordID: string;
@@ -55,7 +55,7 @@ export class ScrapeRequest {
         fullpageScreenshot = false,
         removeCSSselectors = '',
         actions = []
-    }: ScrapeRequestParams) {
+    }: DataRequestParams) {
         this.url = url;
         this.orgId = orgId;
         this.recordID = recordID;
@@ -75,16 +75,16 @@ export class ScrapeRequest {
         return parseFloat(size.substring(0, size.length - 2));
     }
 
-    // Factory method to create a ScrapeRequest from a JSON object
-    static fromJson(json: { [key: string]: any }): ScrapeRequest {
-        return new ScrapeRequest({
+    // Factory method to create a DataRequest from a JSON object
+    static fromJson(json: { [key: string]: any }): DataRequest {
+        return new DataRequest({
             url: json.url,
             orgId: json.orgId,
             recordID: json.recordID,
             waitBeforeScraping: json.waitBeforeScraping,
             htmlVisualizer: json.htmlVisualizer,
             windowSize: json.screen_width && json.screen_height
-                ? { width: ScrapeRequest._parseSize(json.screen_width), height: ScrapeRequest._parseSize(json.screen_height) }
+                ? { width: DataRequest._parseSize(json.screen_width), height: DataRequest._parseSize(json.screen_height) }
                 : { width: 1024, height: 1024 },
             saveHtml: json.saveHtml ?? true,
             saveMarkdown: json.saveMarkdown ?? true,
