@@ -17,6 +17,10 @@ export class WebSocketManager {
     private readonly maxReconnectAttempts: number = 5;
     private readonly reconnectDelay: number = 5000;
     private isConnecting: boolean = false;
+    private pingInterval: NodeJS.Timeout | null = null;
+    private pongTimeout: NodeJS.Timeout | null = null;
+    private readonly pingIntervalTime: number = 60000; // 60 seconds
+    private readonly pongTimeoutTime: number = this.pingIntervalTime / 2; // receive pong back in half the ping interval time
 
     private constructor() {
         this.identifier = '';
@@ -80,10 +84,12 @@ export class WebSocketManager {
         this.ws.onopen = () => {
             Logger.log("[WebSocketManager]: Connection established");
             this.reconnectAttempts = 0;
+            this.startPing();
         };
 
         this.ws.onclose = () => {
             Logger.log("[WebSocketManager]: Connection closed");
+            this.stopPing();
             this.handleReconnection();
         };
 
@@ -94,6 +100,45 @@ export class WebSocketManager {
         this.ws.onmessage = async (data: any) => {
             await this.handleIncomingMessage(data);
         };
+
+        this.ws.on('pong', () => {
+            Logger.log("[WebSocketManager]: Received pong");
+            this.clearPongTimeout();
+        });
+    }
+
+    private startPing(): void {
+        this.stopPing();
+        this.pingInterval = setInterval(() => {
+            if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                this.ws.ping();
+                this.startPongTimeout();
+            }
+        }, this.pingIntervalTime);
+    }
+
+    private stopPing(): void {
+        if (this.pingInterval) {
+            clearInterval(this.pingInterval);
+            this.pingInterval = null;
+        }
+        this.clearPongTimeout();
+    }
+
+    private startPongTimeout(): void {
+        this.clearPongTimeout();
+        this.pongTimeout = setTimeout(() => {
+            Logger.log("[WebSocketManager]: Pong timeout, attempting to reconnect...");
+            this.disconnect();
+            this.handleReconnection();
+        }, this.pongTimeoutTime);
+    }
+
+    private clearPongTimeout(): void {
+        if (this.pongTimeout) {
+            clearTimeout(this.pongTimeout);
+            this.pongTimeout = null;
+        }
     }
 
     private async handleIncomingMessage(data: any): Promise<void> {
@@ -116,15 +161,24 @@ export class WebSocketManager {
     }
 
     private async processScrapeRequest(scrapeRequest: ScrapeRequest): Promise<void> {
-        const scrapedContent = await scrapeUrl(scrapeRequest);
-        const { uploadURL_html, uploadURL_markDown, uploadURL_htmlVisualizer } = await getS3SignedUrls(scrapeRequest.recordID);
+        const [scrapedContent, s3SignedUrls] = await Promise.all([
+            scrapeUrl(scrapeRequest),
+            getS3SignedUrls(scrapeRequest.recordID)
+        ]);
 
-        await putHTMLToSigned(uploadURL_html, scrapedContent.html);
-        await putMarkdownToSigned(uploadURL_markDown, scrapedContent.markdown);
+        const { uploadURL_html, uploadURL_markDown, uploadURL_htmlVisualizer } = s3SignedUrls;
+
+        const putHtmlPromise = putHTMLToSigned(uploadURL_html, scrapedContent.html);
+        const putMarkdownPromise = putMarkdownToSigned(uploadURL_markDown, scrapedContent.markdown);
+
+        const promises = [putHtmlPromise, putMarkdownPromise];
 
         if (scrapedContent.screenshot) {
-            await putHTMLVisualizerToSigned(uploadURL_htmlVisualizer, scrapedContent.screenshot);
+            const putHtmlVisualizerPromise = putHTMLVisualizerToSigned(uploadURL_htmlVisualizer, scrapedContent.screenshot);
+            promises.push(putHtmlVisualizerPromise);
         }
+
+        await Promise.all(promises);
 
         await updateDynamo(
             scrapeRequest.recordID,
@@ -139,7 +193,7 @@ export class WebSocketManager {
 
     private async handleRateLimitReached(): Promise<void> {
         Logger.log("[WebSocketManager]: Rate limit reached, closing connection...");
-        this.disconnect();
+        this.disconnect(true);
     }
 
     private async handleReconnection(): Promise<void> {
@@ -153,15 +207,19 @@ export class WebSocketManager {
         if (this.reconnectAttempts < this.maxReconnectAttempts) {
             this.reconnectAttempts++;
             Logger.log(`[WebSocketManager]: Attempting to reconnect (${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
-            setTimeout(() => this.initialize(this.identifier), this.reconnectDelay);
+            setTimeout(() => {
+                this.disconnect()
+                this.initialize(this.identifier);
+            }, this.reconnectDelay);
         }
     }
 
-    public disconnect(): void {
+    public disconnect(force = false): void {
         if (this.ws) {
             this.ws.close();
             this.ws = null;
-            this.reconnectAttempts = -1;
+            if (force) this.reconnectAttempts = -1;
+            this.stopPing();
         }
     }
 }
