@@ -1,7 +1,7 @@
 import { BrowserWindow } from 'electron';
 import { Logger } from '../logger/logger';
 import TurndownService from 'turndown';
-import { Action, FormField, ScrapeRequest } from './scrape-request';
+import { Action, FormField, DataRequest } from './data-request';
 import sharp from 'sharp';
 
 const delay = (ms: number): Promise<void> => {
@@ -14,7 +14,7 @@ const createTimeoutPromise = (timeout: number, win: BrowserWindow): Promise<neve
             if(!win.isDestroyed()){
                 win.close();
             }
-            reject(new Error(`Scraping timed out after ${timeout} milliseconds`));
+            reject(new Error(`Processing timed out after ${timeout} milliseconds`));
         }, timeout);
     });
 };
@@ -118,8 +118,8 @@ async function executeAction(action: Action, win: BrowserWindow): Promise<void> 
     }
 }
 
-export async function scrapeUrl(scrapeRequest: ScrapeRequest): Promise<{ html: string, markdown: string, screenshot: Buffer | undefined }> {
-    const timeout = 60000 + (scrapeRequest.waitBeforeScraping * 1000);
+export async function processUrl(dataRequest: DataRequest): Promise<{ html: string, markdown: string, screenshot: Buffer | undefined }> {
+    const timeout = 60000 + (dataRequest.waitBeforeScraping * 1000);
     const win = new BrowserWindow({
         show: false,
         webPreferences: {
@@ -127,23 +127,23 @@ export async function scrapeUrl(scrapeRequest: ScrapeRequest): Promise<{ html: s
             nodeIntegration: false,
             contextIsolation: true
         },
-        height: scrapeRequest.windowSize.height,
-        width: scrapeRequest.windowSize.width
+        height: dataRequest.windowSize.height,
+        width: dataRequest.windowSize.width
     });
     return Promise.race([
         new Promise<{ html: string, markdown: string, screenshot: Buffer | undefined }>((resolve, reject) => {
 
-            Logger.log(`Loading url ${scrapeRequest.url}`);
-            win.loadURL(scrapeRequest.url);
+            Logger.log(`Loading url ${dataRequest.url}`);
+            win.loadURL(dataRequest.url);
 
             win.webContents.on('dom-ready', async () => {
                 Logger.log('DOM ready');
                 try {
-                    await delay(scrapeRequest.waitBeforeScraping * 1000);
-                    Logger.log('Wait before scraping completed');
+                    await delay(dataRequest.waitBeforeScraping * 1000);
+                    Logger.log('Wait before processing completed');
 
-                    if (scrapeRequest.removeCSSselectors) {
-                        Logger.log(`Removing CSS selectors: ${scrapeRequest.removeCSSselectors}`);
+                    if (dataRequest.removeCSSselectors) {
+                        Logger.log(`Removing CSS selectors: ${dataRequest.removeCSSselectors}`);
                         let removeSelectorsScript = `
                             function removeSelectorsFromDocument(document, selectorsToRemove) {
                                 const defaultSelectorsToRemove = [
@@ -156,7 +156,7 @@ export async function scrapeUrl(scrapeRequest: ScrapeRequest): Promise<{ html: s
                                 });
                             }
 
-                            let removeCSSselectors = "${scrapeRequest.removeCSSselectors ?? 'default'}";
+                            let removeCSSselectors = "${dataRequest.removeCSSselectors ?? 'default'}";
                             if (removeCSSselectors === "default") {
                                 removeSelectorsFromDocument(document, [])
                             } else if (removeCSSselectors !== "" && removeCSSselectors !== "none") {
@@ -171,9 +171,9 @@ export async function scrapeUrl(scrapeRequest: ScrapeRequest): Promise<{ html: s
                         Logger.log(`CSS selectors removed`);
                     }
 
-                    if (scrapeRequest.actions && scrapeRequest.actions.length > 0) {
-                        Logger.log(`Executing actions: ${JSON.stringify(scrapeRequest.actions)}`);
-                        for (const action of scrapeRequest.actions) {
+                    if (dataRequest.actions && dataRequest.actions.length > 0) {
+                        Logger.log(`Executing actions: ${JSON.stringify(dataRequest.actions)}`);
+                        for (const action of dataRequest.actions) {
                             Logger.log(`Executing action: ${JSON.stringify(action)}`);
                             await executeAction(action, win);
                         }
@@ -181,18 +181,18 @@ export async function scrapeUrl(scrapeRequest: ScrapeRequest): Promise<{ html: s
                     }
 
                     const content = await win.webContents.executeJavaScript('document.documentElement.outerHTML');
-                    Logger.log(`[scrapeUrl]: Scraped content from ${scrapeRequest.url}`);
+                    Logger.log(`[processUrl]: Processed content from ${dataRequest.url}`);
 
                     let screenshot: Buffer | undefined;
-                    if (scrapeRequest.htmlVisualizer) {
+                    if (dataRequest.htmlVisualizer) {
                         Logger.log('Taking screenshot');
-                        if (scrapeRequest.fullpageScreenshot) {
+                        if (dataRequest.fullpageScreenshot) {
                             Logger.log('Taking full page screenshot');
                             screenshot = await takeFullPageScreenshot(win);
-                            Logger.log(`[scrapeUrl]: Full page screenshot captured for ${scrapeRequest.url}`);
+                            Logger.log(`[processUrl]: Full page screenshot captured for ${dataRequest.url}`);
                         } else {
                             screenshot = (await win.webContents.capturePage()).toPNG();
-                            Logger.log(`[scrapeUrl]: Screenshot captured for ${scrapeRequest.url}`);
+                            Logger.log(`[processUrl]: Screenshot captured for ${dataRequest.url}`);
                         }
                     }
 
@@ -203,22 +203,22 @@ export async function scrapeUrl(scrapeRequest: ScrapeRequest): Promise<{ html: s
                     });
 
                     let markdown = turndownService.turndown(content);
-                    Logger.log(`[scrapeUrl]: Converted HTML to Markdown for ${scrapeRequest.url}`);
+                    Logger.log(`[processUrl]: Converted HTML to Markdown for ${dataRequest.url}`);
 
                     resolve({ html: content, markdown: markdown, screenshot: screenshot });
                 } catch (error) {
-                    Logger.error(`[scrapeUrl]: Error scraping ${scrapeRequest.url} - ${error}`);
+                    Logger.error(`[processUrl]: Error processing ${dataRequest.url} - ${error}`);
                     reject(error);
                 } finally {
                     if(!win.isDestroyed()){
                         win.close();
                     }
-                    Logger.log(`[scrapeUrl]: Browser window closed for ${scrapeRequest.url}`);
+                    Logger.log(`[processUrl]: Browser window closed for ${dataRequest.url}`);
                 }
             });
 
             win.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {
-                Logger.error(`[scrapeUrl]: Error Loading to load ${scrapeRequest.url} - ${errorDescription}`);
+                Logger.error(`[processUrl]: Error Loading to load ${dataRequest.url} - ${errorDescription}`);
                 reject(new Error(errorDescription));
             });
         }),
