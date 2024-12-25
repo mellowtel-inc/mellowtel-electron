@@ -89,6 +89,7 @@ export class WebSocketManager {
 
         this.ws.onclose = () => {
             Logger.log("[WebSocketManager]: Connection closed");
+            this.ws = null;
             this.stopPing();
             this.handleReconnection();
         };
@@ -199,7 +200,6 @@ export class WebSocketManager {
     private async handleReconnection(): Promise<void> {
         /* force close */
         if (this.reconnectAttempts === -1) {
-
             this.reconnectAttempts = 0;
             return;
         }
@@ -208,7 +208,6 @@ export class WebSocketManager {
             this.reconnectAttempts++;
             Logger.log(`[WebSocketManager]: Attempting to reconnect (${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
             setTimeout(() => {
-                this.disconnect()
                 this.initialize(this.identifier);
             }, this.reconnectDelay);
         }
@@ -216,9 +215,9 @@ export class WebSocketManager {
 
     public disconnect(force = false): void {
         if (this.ws) {
+            if (force) this.reconnectAttempts = -1;
             this.ws.close();
             this.ws = null;
-            if (force) this.reconnectAttempts = -1;
             this.stopPing();
         }
     }
