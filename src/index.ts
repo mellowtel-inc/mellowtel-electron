@@ -91,7 +91,7 @@ export default class Mellowtel {
    */
   public async showConsentSettings(window: BrowserWindow): Promise<void> {
     await showConsentSettings({
-      initiallyOptedIn: this.getOptInStatus(),
+      initiallyOptedIn: this.getOptInStatus() ?? false,
       nodeId: this.nodeId,
       parentWindow: window,
       onOptIn: async () => {
@@ -106,11 +106,11 @@ export default class Mellowtel {
 
   /**
    * Gets the current opt-in status.
-   * @returns boolean - Returns true if the user is opted in, false otherwise.
+   * @returns boolean | undefined - Returns true if the user is opted in, false if not and undefined if user hasn't decided yet.
    */
-  public getOptInStatus(): boolean {
+  public getOptInStatus(): boolean | undefined {
     const status = getLocalStorage(OPT_IN_STATUS_KEY);
-    return !!status;
+    return status;
   }
 
   /**

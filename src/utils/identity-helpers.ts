@@ -15,14 +15,13 @@ export function getOrGenerateIdentifier(configuration_key: string): string {
     return generateIdentifier(configuration_key);
   }
 }
-
 export function getIdentifier(): string {
   return getLocalStorage("mllwtl_identifier")
 }
 
 function generateIdentifier(configuration_key: string, just_update_key: boolean = false, previous_identifier: string = ""): string {
 
-  const random_string: string = just_update_key ? previous_identifier.split("_")[1] : generateRandomString(10);
+  const random_string: string = just_update_key ? previous_identifier.split("_")[2] : generateRandomString(10);
   const identifier: string = `mllwtl_${configuration_key}_${random_string}`;
   setLocalStorage("mllwtl_identifier", identifier)
   return identifier;
