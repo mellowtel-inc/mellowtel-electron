@@ -46,7 +46,7 @@ export async function showConsentSettings({
         const result = await dialog.showMessageBox(parentWindow!, {
             type: 'info',
             message: "Manage Consent",
-            detail: messageText + (currentState === ContainerState.OPTED_IN ? `\n\nNode ID: ${nodeId}` : ''),
+            detail: messageText + (currentState === ContainerState.OPTED_IN ? `\n\Device Id: ${nodeId}` : ''),
             buttons: buttons,
             defaultId: defaultId,
             cancelId: 1,
