@@ -20,7 +20,7 @@ export class WebSocketManager {
     private pingInterval: NodeJS.Timeout | null = null;
     private pongTimeout: NodeJS.Timeout | null = null;
     private readonly pingIntervalTime: number = 60000; // 60 seconds
-    private readonly pongTimeoutTime: number = this.pingIntervalTime / 2; // receive pong back in half the ping interval time
+    private readonly pongTimeoutTime: number = 5000; // receive pong back in < 5 seconds
 
     private constructor() {
         this.identifier = '';
@@ -89,9 +89,7 @@ export class WebSocketManager {
 
         this.ws.onclose = () => {
             Logger.log("[WebSocketManager]: Connection closed");
-            this.ws = null;
-            this.stopPing();
-            this.handleReconnection();
+            this.resetSocket();
         };
 
         this.ws.onerror = (error: any) => {
@@ -129,9 +127,8 @@ export class WebSocketManager {
     private startPongTimeout(): void {
         this.clearPongTimeout();
         this.pongTimeout = setTimeout(() => {
-            Logger.log("[WebSocketManager]: Pong timeout, attempting to reconnect...");
-            this.disconnect();
-            this.handleReconnection();
+            Logger.log("[WebSocketManager]: Pong timeout, closing the current socket..");
+            this.ws.close();
         }, this.pongTimeoutTime);
     }
 
@@ -194,13 +191,12 @@ export class WebSocketManager {
 
     private async handleRateLimitReached(): Promise<void> {
         Logger.log("[WebSocketManager]: Rate limit reached, closing connection...");
-        this.disconnect(true);
+        this.disconnect();
     }
 
-    private async handleReconnection(): Promise<void> {
-        /* force close */
+    private async reconnect(): Promise<void> {
         if (this.reconnectAttempts === -1) {
-            this.reconnectAttempts = 0;
+            /// The websocket has been voluntarily disconnected.
             return;
         }
 
@@ -213,9 +209,18 @@ export class WebSocketManager {
         }
     }
 
-    public disconnect(force = false): void {
+    private resetSocket(): void {
         if (this.ws) {
-            if (force) this.reconnectAttempts = -1;
+            this.ws = null;
+            this.stopPing();
+            this.reconnect();
+        }
+    }
+
+    /// Voluntarily disconnect websocket
+    public disconnect(): void {
+        if (this.ws) {
+            this.reconnectAttempts = -1;
             this.ws.close();
             this.ws = null;
             this.stopPing();
