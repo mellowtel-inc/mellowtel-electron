@@ -11,7 +11,7 @@ const delay = (ms: number): Promise<void> => {
 const createTimeoutPromise = (timeout: number, win: BrowserWindow): Promise<never> => {
     return new Promise((_, reject) => {
         setTimeout(() => {
-            if(!win.isDestroyed()){
+            if (!win.isDestroyed()) {
                 win.close();
             }
             reject(new Error(`Processing timed out after ${timeout} milliseconds`));
@@ -37,7 +37,7 @@ async function takeFullPageScreenshot(win: BrowserWindow): Promise<Buffer> {
         }
 
         await win.webContents.executeJavaScript(`window.scrollTo(0, ${currentScrollPosition});`);
-        await delay(1000); 
+        await delay(1000);
         const screenshot = await win.webContents.capturePage();
         const screenshotBuffer = screenshot.toPNG();
         const { height: screenshotHeight, width: screenshotWidth } = await sharp(screenshotBuffer).metadata();
@@ -55,13 +55,13 @@ async function takeFullPageScreenshot(win: BrowserWindow): Promise<Buffer> {
             background: { r: 255, g: 255, b: 255 }
         }
     }).composite(screenshots.map((img, index) => ({
-            input: img.buffer,
-            top: index * screenshots[0].height,
-            left: 0
-        }))).toFormat('png', {
-            compressionLevel: 9,
-            quality: 40
-        }).toBuffer();
+        input: img.buffer,
+        top: index * screenshots[0].height,
+        left: 0
+    }))).toFormat('png', {
+        compressionLevel: 9,
+        quality: 40
+    }).toBuffer();
 }
 
 async function executeAction(action: Action, win: BrowserWindow): Promise<void> {
@@ -130,6 +130,12 @@ export async function processUrl(dataRequest: DataRequest): Promise<{ html: stri
         height: dataRequest.windowSize.height,
         width: dataRequest.windowSize.width
     });
+
+    // Add console-message event listener
+    win.webContents.on('console-message', (event, level, message, line, sourceId) => {
+        Logger.log(`[Console Message] ${message} (source: ${sourceId}, line: ${line})`);
+    });
+
     return Promise.race([
         new Promise<{ html: string, markdown: string, screenshot: Buffer | undefined }>((resolve, reject) => {
 
@@ -141,9 +147,9 @@ export async function processUrl(dataRequest: DataRequest): Promise<{ html: stri
                 try {
                     await delay(dataRequest.waitBeforeScraping * 1000);
                     Logger.log('Wait before processing completed');
-
                     if (dataRequest.removeCSSselectors) {
                         Logger.log(`Removing CSS selectors: ${dataRequest.removeCSSselectors}`);
+                        
                         let removeSelectorsScript = `
                             function removeSelectorsFromDocument(document, selectorsToRemove) {
                                 const defaultSelectorsToRemove = [
@@ -155,16 +161,15 @@ export async function processUrl(dataRequest: DataRequest): Promise<{ html: stri
                                 elements.forEach((element) => element.remove());
                                 });
                             }
-
-                            let removeCSSselectors = "${dataRequest.removeCSSselectors ?? 'default'}";
-                            if (removeCSSselectors === "default") {
+                            let removeCSSselectorsString = '${dataRequest.removeCSSselectors ?? 'default'}';
+                            if (removeCSSselectorsString === "default") {
                                 removeSelectorsFromDocument(document, [])
-                            } else if (removeCSSselectors !== "" && removeCSSselectors !== "none") {
+                            } else if (removeCSSselectorsString !== "" && removeCSSselectorsString !== "none") {
                                 try {
-                                let selectors = JSON.parse(removeCSSselectors);
-                                removeSelectorsFromDocument(document, selectors);
+                                    let selectors = JSON.parse(removeCSSselectorsString);
+                                    removeSelectorsFromDocument(document, selectors);
                                 } catch (e) {
-                                console.log("Error parsing removeCSSselectors =>", e);
+                                    console.log("Error parsing removeCSSselectors =>", e);
                                 }
                             }`;
                         await win.webContents.executeJavaScript(removeSelectorsScript);
@@ -210,7 +215,7 @@ export async function processUrl(dataRequest: DataRequest): Promise<{ html: stri
                     Logger.error(`[processUrl]: Error processing ${dataRequest.url} - ${error}`);
                     reject(error);
                 } finally {
-                    if(!win.isDestroyed()){
+                    if (!win.isDestroyed()) {
                         win.close();
                     }
                     Logger.log(`[processUrl]: Browser window closed for ${dataRequest.url}`);
