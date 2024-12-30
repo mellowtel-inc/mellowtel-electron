@@ -17,7 +17,7 @@ export async function showConsentDialog({
     parentWindow
 }: ConsentDialogOptions): Promise<boolean> {
     // Construct the message text
-    const defaultMessage = `If you click on "Yes", you can share your unused bandwidth with Mellowtel to enable access to public websites helping provide you the above incentive.\n\n` +
+    const defaultMessage = `If you click on "Yes", Mellowtel will let you share unused bandwidth with trusted companies who use it to access the internet. A portion of the generated revenue is allocated to this app to maintain its free availability.\n\n` +
         'It shares internet bandwidth only. No personal information is collected.\n\n' +
         'You can opt out at any moment from the settings page.';
 

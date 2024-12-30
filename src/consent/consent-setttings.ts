@@ -84,10 +84,9 @@ export async function showConsentSettings({
 function getInformationText(state: ContainerState): string {
     switch (state) {
         case ContainerState.OPTED_IN:
-            return "Mellowtel is an open-source library that lets you share your unused internet with trusted startups who use it to access and retrieve information from public websites. The developer of this app gets a small share of the revenue. It helps maintain this app free. Mellowtel shares internet bandwidth only.\n\nNone of your personal information (not even anonymized data) is collected except the IP address which is used just to infer the country of origin to provide geo-specific services.";
-
+            return "Mellowtel is an open-source library that lets you share your unused internet with companies that use it to access the web. The developer of this app gets a small share of the revenue. It helps maintain this extension free and available for everyone. Mellowtel shares your bandwidth only. Security and privacy are 100% guaranteed. It doesn't collect, share, or sell personal information (not even anonymized data)."
         case ContainerState.OPTED_OUT:
-            return 'You are currently opted out. Your device\'s resources are not being used.';
+            return 'You are currently opted out. To support this app, please consider opting in.';
 
         case ContainerState.CONFIRM_OPT_OUT:
             return 'Mellowtel is used by hundreds of thousands of users around the world. By remaining opted in, you will join this growing network of users. Security, privacy and speed of browsing are 100% guaranteed.\n\nOpting-out might negatively affect the quality of the service offered by this app. Please consider staying opted-in to keep your incentives available.';
