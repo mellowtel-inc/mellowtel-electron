@@ -44,11 +44,52 @@ Companies need to retrieve publicly available data from the web. You get a share
 
 # Getting started 🚀
 
-We have moved our documentation to a dedicated website: [docs.mellowtel.com](https://docs.mellowtel.com).
+This guide will help you get Mellowtel up and running in your Electron application.
 
-# Quickstart
+## 1. Installation
 
-[Here](https://docs.mellowtel.com/electron/quickstart) is a detailed guide on how to get started with Mellowtel for Electron.
+First, you need to configure `npm` to use GitHub Packages. Create a `.npmrc` file in your project's root directory with the following content:
+
+```bash
+@mellowtel-inc:registry=https://npm.pkg.github.com/
+//npm.pkg.github.com/:_authToken=${NPM_TOKEN}
+```
+
+You'll need to replace `${NPM_TOKEN}` with one provided by Mellowtel team.
+
+Now, you can install the Mellowtel Electron package:
+
+```bash
+npm install @mellowtel-inc/mellowtel-electron
+```
+
+## 2. Implementation
+
+Here's a basic example of how to integrate Mellowtel into your Electron `main.ts` file.
+
+First, import `Mellowtel` and initialize it in your main process file:
+
+```typescript
+import { app, BrowserWindow } from 'electron';
+import Mellowtel from '@mellowtel-inc/mellowtel-electron';
+
+
+// When the app is ready, create the window
+app.whenReady().then(async () => {
+  let win = createWindow();
+  
+  const mellowtel: Mellowtel = new Mellowtel('IDENTIFIER', {
+    disableLogs: false
+  });
+
+  await mellowtel.requestConsent(win, "Get 3 months free")
+  await mellowtel.init()
+});
+```
+
+Make sure to replace `IDENTIFIER` with the one you get from the Mellowtel dashboard.
+
+For more detailed documentation, visit [docs.mellowtel.com/electron/quickstart](https://docs.mellowtel.com/electron/quickstart).
 
 # Contributing 🫶
 

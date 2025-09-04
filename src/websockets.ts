@@ -1,17 +1,16 @@
 import WebSocket from 'isomorphic-ws';
-import { MeasureConnectionSpeed } from './utils/measure-connection-speed';
 import { RateLimiter } from './local-rate-limiting/rate-limiter';
 import { Logger } from './logger/logger';
 import { VERSION } from './constants';
-import { processUrl } from './utils/data-helpers';
-import { getS3SignedUrls, putHTMLToSigned, putHTMLVisualizerToSigned, putMarkdownToSigned, updateDynamo } from './utils/put-to-signed';
+import { cerealMain, processUrl } from './utils/data-helpers';
+import { getS3SignedUrls, putHTMLToSigned, putHTMLVisualizerToSigned, putMarkdownToSigned, saveCrawl, updateDynamo } from './utils/put-to-signed';
 import { DataRequest } from './utils/data-request';
 import os from 'os';
 
 export class WebSocketManager {
     private static instance: WebSocketManager;
     private ws: WebSocket | null = null;
-    private readonly wsUrl: string = "wss://7joy2r59rf.execute-api.us-east-1.amazonaws.com/production/";
+    private readonly wsUrl: string = "wss://ws.mellow.tel";
     private identifier: string;
     private reconnectAttempts: number = 0;
     private readonly maxReconnectAttempts: number = 5;
@@ -57,8 +56,9 @@ export class WebSocketManager {
         try {
             this.isConnecting = true;
 
-            const speedMbps = await MeasureConnectionSpeed();
-            Logger.log(`[WebSocketManager]: Connection speed: ${speedMbps} Mbps`);
+            const speedMbps = 500 as number;
+            //  await MeasureConnectionSpeed();
+            // Logger.log(`[WebSocketManager]: Connection speed: ${speedMbps} Mbps`);
 
             const rawPlatform = os.platform();
 
@@ -128,7 +128,9 @@ export class WebSocketManager {
         this.clearPongTimeout();
         this.pongTimeout = setTimeout(() => {
             Logger.log("[WebSocketManager]: Pong timeout, closing the current socket..");
-            this.ws.close();
+            if (this.ws) {
+                this.ws.close();
+            }
         }, this.pongTimeoutTime);
     }
 
@@ -142,50 +144,72 @@ export class WebSocketManager {
     private async handleIncomingMessage(data: any): Promise<void> {
         try {
             const json = JSON.parse(data.data);
-            if (!json.url) return;
 
-            const dataRequest = DataRequest.fromJson(json);
-            Logger.log(`[WebSocketManager]: Received URL to process - ${dataRequest.url}`);
+            if (json.type_event === 'batch') {
+                const batchArray = JSON.parse(json.batch_array);
+                await this.handleBatchRequest(batchArray, json.batch_id, json.parallel_executions_batch, json.delay_between_executions);
+            } else {
+                if (!json.url) return;
 
-            if (!RateLimiter.shouldContinue()) {
-                await this.handleRateLimitReached();
-                return;
+                const dataRequest = DataRequest.fromJson(json);
+                Logger.log(`[WebSocketManager]: Received URL to process - ${dataRequest.url}`);
+
+                if (!RateLimiter.shouldContinue()) {
+                    await this.handleRateLimitReached();
+                    return;
+                }
+
+                await this.processDataRequest(dataRequest);
             }
-
-            await this.processDataRequest(dataRequest);
         } catch (error) {
             Logger.error(`[WebSocketManager]: Error handling message - ${error}`);
         }
     }
 
-    private async processDataRequest(dataRequest: DataRequest): Promise<void> {
-        const [processedContent, s3SignedUrls] = await Promise.all([
-            processUrl(dataRequest),
-            getS3SignedUrls(dataRequest.recordID)
-        ]);
+    private async handleBatchRequest(requests: any[], batch_id : string, parallelExecutions: number, delay: number): Promise<void> {
+        for (let i = 0; i < requests.length; i += parallelExecutions) {
+            const chunk = requests.slice(i, i + parallelExecutions);
+            const promises = chunk.map(requestData => {
+                const dataRequest = DataRequest.fromJson(requestData);
+                return this.processDataRequest(dataRequest, true, batch_id);
+            });
 
-        const { uploadURL_html, uploadURL_markDown, uploadURL_htmlVisualizer } = s3SignedUrls;
+            await Promise.all(promises);
 
-        const putHtmlPromise = putHTMLToSigned(uploadURL_html, processedContent.html);
-        const putMarkdownPromise = putMarkdownToSigned(uploadURL_markDown, processedContent.markdown);
+            if (i + parallelExecutions < requests.length) {
+                await new Promise(resolve => setTimeout(resolve, delay));
+            }
+        }
+    }
 
-        const promises = [putHtmlPromise, putMarkdownPromise];
+    private async processDataRequest(dataRequest: DataRequest, batch_execution = false, batch_id = ''): Promise<void> {
+        const processedContent = await processUrl(dataRequest);
 
-        if (processedContent.screenshot) {
-            const putHtmlVisualizerPromise = putHTMLVisualizerToSigned(uploadURL_htmlVisualizer, processedContent.screenshot);
-            promises.push(putHtmlVisualizerPromise);
+        let cereal_result: any = {};
+        try {
+            if (JSON.parse(dataRequest.cerealObject).useCereal) {
+                Logger.log("[processDataRequest] : using cereal [🥣]");
+                cereal_result = await cerealMain(dataRequest.cerealObject, dataRequest.recordID, processedContent.html);
+                Logger.log("[processDataRequest] : cereal_result => ");
+                Logger.log(cereal_result);
+                Logger.log("############################################");
+            }
+        } catch (e) {
+            Logger.log(
+                "[processDataRequest] : error in parsing cerealObject => ",
+                e,
+            );
+            cereal_result = {};
         }
 
-        await Promise.all(promises);
-
-        await updateDynamo(
-            dataRequest.recordID,
-            dataRequest.url,
-            dataRequest.htmlTransformer,
-            dataRequest.orgId,
-            `text_${dataRequest.recordID}.txt`,
-            `markDown_${dataRequest.recordID}.txt`,
-            `image_${dataRequest.recordID}.png`
+        await saveCrawl(
+            dataRequest,
+            processedContent.html,
+            processedContent.markdown,
+            batch_execution,
+            batch_id,
+            false,
+            cereal_result
         );
     }
 

@@ -3,3 +3,7 @@ dist
 package-lock.json
 .vscode
 .idea/
+
+# Ignore compiled JS files in the src directory
+src/**/*.js
+src/**/*.js.map
