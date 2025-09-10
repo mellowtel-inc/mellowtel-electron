@@ -114,6 +114,13 @@ export default class Mellowtel {
   }
 
   /**
+   * Returns the mellowtel node id
+   */
+  public getNodeId(): string {
+    return this.nodeId;
+  }
+
+  /**
    * Manually opts in the user to the service from your own interface.
    * @returns Promise<void>
    */
