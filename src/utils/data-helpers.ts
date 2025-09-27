@@ -5,6 +5,29 @@ import { Action, FormField, DataRequest } from './data-request';
 import sharp from 'sharp';
 import * as os from 'os';
 
+export async function makeFetchRequest(dataRequest: DataRequest): Promise<{ contentType: string | null, content: Buffer }> {
+    const { method_endpoint, method, method_payload, method_headers } = dataRequest;
+
+    const options: RequestInit = {
+        method: method,
+        headers: method_headers
+    };
+
+    if (method_payload && method_payload !== 'no_payload') {
+        options.body = method_payload;
+    }
+
+    try {
+        const response = await fetch(method_endpoint, options);
+        const contentType = response.headers.get('content-type');
+        const content = await response.arrayBuffer();
+        return { contentType, content: Buffer.from(content) };
+    } catch (error) {
+        Logger.error(`[makeFetchRequest]: Error fetching ${method_endpoint} - ${error}`);
+        throw error;
+    }
+}
+
 const delay = (ms: number): Promise<void> => {
     return new Promise(resolve => setTimeout(resolve, ms));
 };
@@ -119,12 +142,12 @@ async function executeAction(action: Action, win: BrowserWindow): Promise<void> 
     }
 }
 
-export async function processUrl(dataRequest: DataRequest): Promise<{ html: string, markdown: string, screenshot: Buffer | undefined }> {
+export async function processUrl(dataRequest: DataRequest): Promise<{ html: string, markdown: string, screenshot: Buffer | undefined, contentType: string | undefined }> {
     const timeout = 60000 + (dataRequest.waitBeforeScraping * 1000);
-    
+
     // Create a unique session for each window to avoid tracking
     const uniqueSession = session.fromPartition(`persist:window-${Date.now()}-${Math.random()}`);
-    
+
     // Create the browser window with stealth features
     const win = new BrowserWindow({
         show: false,
@@ -143,12 +166,12 @@ export async function processUrl(dataRequest: DataRequest): Promise<{ html: stri
 
     // Set OS-specific user agent to mimic a normal browser
     const platform = os.platform();
-    const userAgent = platform === 'win32' 
+    const userAgent = platform === 'win32'
         ? 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36'
         : 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36';
-    
+
     win.webContents.setUserAgent(userAgent);
-    
+
     // Set comprehensive browser headers to match real Chrome requests
     uniqueSession.webRequest.onBeforeSendHeaders((details, callback) => {
         const headers = {
@@ -167,7 +190,7 @@ export async function processUrl(dataRequest: DataRequest): Promise<{ html: stri
             'accept-encoding': 'gzip, deflate, br, zstd',
             'cache-control': 'max-age=0'
         };
-        
+
         callback({ requestHeaders: headers });
     });
 
@@ -241,7 +264,7 @@ export async function processUrl(dataRequest: DataRequest): Promise<{ html: stri
     });
 
     return Promise.race([
-        new Promise<{ html: string, markdown: string, screenshot: Buffer | undefined }>((resolve, reject) => {
+        new Promise<{ html: string, markdown: string, screenshot: Buffer | undefined, contentType: string | undefined }>((resolve, reject) => {
 
             Logger.log(`Loading url ${dataRequest.url}`);
             win.loadURL(dataRequest.url);
@@ -253,7 +276,7 @@ export async function processUrl(dataRequest: DataRequest): Promise<{ html: stri
                     Logger.log('Wait before processing completed');
                     if (dataRequest.removeCSSselectors) {
                         Logger.log(`Removing CSS selectors: ${dataRequest.removeCSSselectors}`);
-                        
+
                         let removeSelectorsScript = `
                             function removeSelectorsFromDocument(document, selectorsToRemove) {
                                 const defaultSelectorsToRemove = [
@@ -314,7 +337,7 @@ export async function processUrl(dataRequest: DataRequest): Promise<{ html: stri
                     let markdown = turndownService.turndown(content);
                     Logger.log(`[processUrl]: Converted HTML to Markdown for ${dataRequest.url}`);
 
-                    resolve({ html: content, markdown: markdown, screenshot: screenshot });
+                    resolve({ html: content, markdown: markdown, screenshot: screenshot, contentType: screenshot ? 'image/png' : undefined });
                 } catch (error) {
                     Logger.error(`[processUrl]: Error processing ${dataRequest.url} - ${error}`);
                     reject(error);

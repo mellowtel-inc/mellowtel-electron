@@ -23,6 +23,7 @@ interface DataRequestParams {
     saveHtml?: boolean;
     saveMarkdown?: boolean;
     saveText?: boolean;
+    saveFile?: boolean;
     htmlTransformer?: string;
     fullpageScreenshot?: boolean;
     removeCSSselectors?: string;
@@ -41,7 +42,7 @@ interface DataRequestParams {
     method?: string;
     method_endpoint?: string;
     method_payload?: string;
-    method_headers?: string;
+    method_headers?: any;
     fetchInstead?: boolean;
     actions?: Action[];
     rawData?: boolean;
@@ -69,6 +70,7 @@ export class DataRequest {
     saveHtml: boolean;
     saveMarkdown: boolean;
     saveText: boolean;
+    saveFile: boolean;
     htmlTransformer: string;
     removeCSSselectors?: string;
     classNamesToBeRemoved: string[];
@@ -87,7 +89,7 @@ export class DataRequest {
     method: string;
     method_endpoint: string;
     method_payload: string;
-    method_headers: string;
+    method_headers: any;
     fetchInstead: boolean;
     actions: Action[];
     rawData: boolean;
@@ -114,6 +116,7 @@ export class DataRequest {
         saveHtml = false,
         saveMarkdown = true,
         saveText = false,
+        saveFile = false,
         htmlTransformer = 'none',
         fullpageScreenshot = false,
         removeCSSselectors = 'default',
@@ -158,6 +161,7 @@ export class DataRequest {
         this.saveHtml = saveHtml;
         this.saveMarkdown = saveMarkdown;
         this.saveText = saveText;
+        this.saveFile = saveFile;
         this.htmlTransformer = htmlTransformer;
         this.fullpageScreenshot = fullpageScreenshot;
         this.removeCSSselectors = removeCSSselectors;
@@ -201,6 +205,14 @@ export class DataRequest {
 
     // Factory method to create a DataRequest from a JSON object
     static fromJson(json: { [key: string]: any }): DataRequest {
+        let parsed_headers = {};
+        if (json.method_headers && json.method_headers !== 'no_headers') {
+            try {
+                parsed_headers = JSON.parse(json.method_headers);
+            } catch (e) {
+                parsed_headers = {};
+            }
+        }
         const params: DataRequestParams = {
             url: json.url,
             orgId: json.orgId,
@@ -213,6 +225,7 @@ export class DataRequest {
             saveHtml: json.saveHtml,
             saveMarkdown: json.saveMarkdown,
             saveText: json.saveText,
+            saveFile: json.saveFile,
             htmlTransformer: json.htmlTransformer,
             removeCSSselectors: json.removeCSSselectors,
             classNamesToBeRemoved: json.classNamesToBeRemoved ? JSON.parse(json.classNamesToBeRemoved) : [],
@@ -230,7 +243,7 @@ export class DataRequest {
             method: json.method,
             method_endpoint: json.method_endpoint,
             method_payload: json.method_payload,
-            method_headers: json.method_headers,
+            method_headers: parsed_headers,
             fetchInstead: json.fetchInstead,
             actions: json.actions ? JSON.parse(json.actions) : [],
             rawData: json.rawData,

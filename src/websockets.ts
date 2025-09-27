@@ -2,8 +2,8 @@ import WebSocket from 'isomorphic-ws';
 import { RateLimiter } from './local-rate-limiting/rate-limiter';
 import { Logger } from './logger/logger';
 import { VERSION } from './constants';
-import { cerealMain, processUrl } from './utils/data-helpers';
-import { getS3SignedUrls, putHTMLToSigned, putHTMLVisualizerToSigned, putMarkdownToSigned, saveCrawl, updateDynamo } from './utils/put-to-signed';
+import { cerealMain, makeFetchRequest, processUrl } from './utils/data-helpers';
+import { getS3SignedUrls, uploadToS3, saveCrawl } from './utils/put-to-signed';
 import { DataRequest } from './utils/data-request';
 import os from 'os';
 
@@ -166,7 +166,7 @@ export class WebSocketManager {
         }
     }
 
-    private async handleBatchRequest(requests: any[], batch_id : string, parallelExecutions: number, delay: number): Promise<void> {
+    private async handleBatchRequest(requests: any[], batch_id: string, parallelExecutions: number, delay: number): Promise<void> {
         for (let i = 0; i < requests.length; i += parallelExecutions) {
             const chunk = requests.slice(i, i + parallelExecutions);
             const promises = chunk.map(requestData => {
@@ -183,7 +183,19 @@ export class WebSocketManager {
     }
 
     private async processDataRequest(dataRequest: DataRequest, batch_execution = false, batch_id = ''): Promise<void> {
-        const processedContent = await processUrl(dataRequest);
+        let processedContent: { html: string; markdown: string; } | undefined;
+        let fileNameBytes: string = "";
+        if (dataRequest.method_endpoint) {
+            const fetchResult = await makeFetchRequest(dataRequest);
+            if (dataRequest.saveFile) {
+                const { uploadUrl, fileName } = await getS3SignedUrls(dataRequest.recordID, fetchResult.contentType ?? 'application/octet-stream');
+                await uploadToS3(uploadUrl, fetchResult.contentType ?? 'application/octet-stream', fetchResult.content);
+                fileNameBytes = fileName;
+            }
+            processedContent = { html: '', markdown: '' };
+        } else {
+            processedContent = await processUrl(dataRequest);
+        }
 
         let cereal_result: any = {};
         try {
@@ -209,7 +221,8 @@ export class WebSocketManager {
             batch_execution,
             batch_id,
             false,
-            cereal_result
+            cereal_result,
+            fileNameBytes
         );
     }
 
