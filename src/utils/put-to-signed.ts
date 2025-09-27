@@ -96,7 +96,6 @@ export async function saveCrawl(
     saveHtml: datarequest.saveHtml,
     saveMarkdown: datarequest.saveMarkdown,
     cereal_result: JSON.stringify({ "data": cereal_result, "success": true }),
-    image_result: true,
     file_name_bytes: file_name_bytes
   };
   if (datarequest.saveHtml) {
