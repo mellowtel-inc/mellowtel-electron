@@ -2,6 +2,14 @@ import { getOrGenerateIdentifier } from "./utils/identity-helpers";
 import { Logger } from "./logger/logger";
 import { WebSocketManager } from "./websockets";
 import { getLocalStorage, setLocalStorage } from "./storage/storage-helpers";
+import { 
+  getTotalRequestCount, 
+  getDailyRequestCount, 
+  getRequestCounts, 
+  getRequestCountForDate, 
+  getDailyRequestsHistory, 
+  getRequestCountsInRange 
+} from "./storage/request-counter";
 import { BrowserWindow } from 'electron'
 import { showConsentSettings } from "./consent/consent-setttings";
 import { showConsentDialog } from "./consent/consent-dialog";
@@ -137,5 +145,56 @@ export default class Mellowtel {
     setLocalStorage(OPT_IN_STATUS_KEY, false);
     this.wsManager.disconnect();
     Logger.log("User opted out");
+  }
+
+  /**
+   * Gets the total number of requests processed since installation.
+   * @returns number - The total request count
+   */
+  public getTotalRequestCount(): number {
+    return getTotalRequestCount();
+  }
+
+  /**
+   * Gets the number of requests processed today.
+   * @returns number - The daily request count for today
+   */
+  public getDailyRequestCount(): number {
+    return getDailyRequestCount();
+  }
+
+  /**
+   * Gets the number of requests processed on a specific date.
+   * @param date - The date in YYYY-MM-DD format (e.g., "2025-10-29")
+   * @returns number - The request count for that date
+   */
+  public getRequestCountForDate(date: string): number {
+    return getRequestCountForDate(date);
+  }
+
+  /**
+   * Gets all historical daily request counts.
+   * @returns Object with dates as keys (YYYY-MM-DD) and request counts as values
+   */
+  public getDailyRequestsHistory(): { [date: string]: number } {
+    return getDailyRequestsHistory();
+  }
+
+  /**
+   * Gets request counts for a specific date range.
+   * @param startDate - Start date in YYYY-MM-DD format
+   * @param endDate - End date in YYYY-MM-DD format
+   * @returns Object with dates as keys and request counts as values for the specified range
+   */
+  public getRequestCountsInRange(startDate: string, endDate: string): { [date: string]: number } {
+    return getRequestCountsInRange(startDate, endDate);
+  }
+
+  /**
+   * Gets detailed request count information including total, daily (today), and complete history.
+   * @returns Object containing total requests, daily requests for today, and all historical daily counts
+   */
+  public getRequestCounts(): { total: number; daily: number; dailyHistory: { [date: string]: number } } {
+    return getRequestCounts();
   }
 }

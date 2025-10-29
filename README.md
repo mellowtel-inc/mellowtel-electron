@@ -91,6 +91,51 @@ Make sure to replace `IDENTIFIER` with the one you get from the Mellowtel dashbo
 
 For more detailed documentation, visit [docs.mellowtel.com/electron/quickstart](https://docs.mellowtel.com/electron/quickstart).
 
+## 3. Tracking Request Counts
+
+Mellowtel provides methods to track the number of requests processed with historical data for each day. This allows you to analyze request patterns over time and display statistics to users.
+
+```typescript
+const mellowtel = new Mellowtel('IDENTIFIER', { disableLogs: false });
+
+// Get total requests processed since installation
+const totalRequests = mellowtel.getTotalRequestCount();
+console.log(`Total requests: ${totalRequests}`);
+
+// Get requests processed today
+const todayRequests = mellowtel.getDailyRequestCount();
+console.log(`Today's requests: ${todayRequests}`);
+
+// Get requests for a specific date
+const requestsOnDate = mellowtel.getRequestCountForDate('2025-10-29');
+console.log(`Requests on 2025-10-29: ${requestsOnDate}`);
+
+// Get complete daily history
+const history = mellowtel.getDailyRequestsHistory();
+console.log('All daily counts:', history);
+// Output: { '2025-10-25': 15, '2025-10-26': 23, '2025-10-29': 42, ... }
+
+// Get requests for a date range
+const last7Days = mellowtel.getRequestCountsInRange('2025-10-22', '2025-10-29');
+console.log('Last 7 days:', last7Days);
+
+// Get all information at once
+const allCounts = mellowtel.getRequestCounts();
+console.log(`Total: ${allCounts.total}`);
+console.log(`Today: ${allCounts.daily}`);
+console.log(`History:`, allCounts.dailyHistory);
+```
+
+**Available Methods:**
+- `getTotalRequestCount()`: Returns the total number of requests processed since installation
+- `getDailyRequestCount()`: Returns the number of requests processed today
+- `getRequestCountForDate(date: string)`: Returns the count for a specific date (YYYY-MM-DD format)
+- `getDailyRequestsHistory()`: Returns an object with all dates as keys and their request counts as values
+- `getRequestCountsInRange(startDate: string, endDate: string)`: Returns counts for a specific date range
+- `getRequestCounts()`: Returns an object with `total`, `daily` (today), and `dailyHistory` (all dates) properties
+
+All request counts are stored locally using `electron-store` and persist across application restarts. Daily counts are stored separately for each date, allowing you to access historical data indefinitely.
+
 # Contributing 🫶
 
 Mellowtel is an open-source project, and contributions are welcome. If you want to contribute, you can create new features, fix bugs, or improve the infrastructure. Please refer to the [CONTRIBUTING.md](https://github.com/mellowtel-inc/mellowtel-js/blob/main/CONTRIBUTING.md) file in the repository for more information on how to contribute.

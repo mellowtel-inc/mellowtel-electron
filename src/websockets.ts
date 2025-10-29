@@ -5,6 +5,7 @@ import { VERSION } from './constants';
 import { cerealMain, makeFetchRequest, processUrl } from './utils/data-helpers';
 import { getS3SignedUrls, uploadToS3, saveCrawl } from './utils/put-to-signed';
 import { DataRequest } from './utils/data-request';
+import { incrementRequestCount } from './storage/request-counter';
 import os from 'os';
 
 export class WebSocketManager {
@@ -224,6 +225,9 @@ export class WebSocketManager {
             cereal_result,
             fileNameBytes
         );
+
+        // Increment request count after successful processing
+        incrementRequestCount();
     }
 
     private async handleRateLimitReached(): Promise<void> {
