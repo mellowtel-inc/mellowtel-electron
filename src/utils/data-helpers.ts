@@ -145,8 +145,8 @@ async function executeAction(action: Action, win: BrowserWindow): Promise<void> 
 export async function processUrl(dataRequest: DataRequest): Promise<{ html: string, markdown: string, screenshot: Buffer | undefined, contentType: string | undefined }> {
     const timeout = 60000 + (dataRequest.waitBeforeScraping * 1000);
 
-    // Create a unique session for each window to avoid tracking
-    const uniqueSession = session.fromPartition(`persist:window-${Date.now()}-${Math.random()}`);
+    // In-memory unique session for each window to avoid tracking and disc usage
+    const uniqueSession = session.fromPartition(`window-${Date.now()}-${Math.random()}`);
 
     // Create the browser window with stealth features
     const win = new BrowserWindow({
