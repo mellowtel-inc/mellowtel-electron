@@ -142,6 +142,50 @@ Mellowtel is an open-source project, and contributions are welcome. If you want 
 
 To see how to contribute, visit [Contribution guidelines](https://github.com/mellowtel-inc/mellowtel-electron/blob/main/CONTRIBUTING.md)
 
+## Publishing for Developers 📦
+
+If you need to publish a new version of this package, follow these steps:
+
+### Local Publishing
+
+1. **Get a GitHub Personal Access Token (PAT)**:
+   - Go to GitHub Settings → Developer settings → Personal access tokens → Tokens (classic)
+   - Click "Generate new token (classic)"
+   - Give it a name (e.g., "mellowtel npm publish")
+   - Select scopes: `write:packages`, `read:packages`, `repo`
+   - Generate and copy the token
+
+2. **Create a `.npmrc` file** in your home directory (`~/.npmrc` or `C:\Users\YourUsername\.npmrc`):
+   ```
+   //npm.pkg.github.com/:_authToken=YOUR_GITHUB_TOKEN
+   @mellowtel-inc:registry=https://npm.pkg.github.com
+   ```
+   Replace `YOUR_GITHUB_TOKEN` with your PAT.
+
+3. **Publish the package**:
+   ```bash
+   npm publish
+   ```
+
+**Note**: If you don't have write access to the `mellowtel-inc` organization, ask an admin for a token with the necessary permissions.
+
+### GitHub Actions Publishing
+
+The repository is configured to automatically publish to GitHub Packages when code is pushed to the `main` branch.
+
+**Requirements**:
+- A repository secret named `NPM_TOKEN` must be set with a PAT from an account that has write access to the `mellowtel-inc` organization
+- The PAT must have the following scopes: `write:packages`, `read:packages`, `repo`
+
+To set up the secret:
+1. Go to `https://github.com/mellowtel-inc/mellowtel-electron/settings/secrets/actions`
+2. Click "New repository secret"
+3. Name: `NPM_TOKEN`
+4. Value: Your GitHub Personal Access Token
+5. Click "Add secret"
+
+The GitHub Actions workflow (`.github/workflows/publish.yml`) will handle the publishing automatically on each push to main.
+
 # Support
 
 You can reach out to us on [Discord](https://discord.gg/GC8vwpDWC9) if you have any questions or need help.
