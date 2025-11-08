@@ -11,7 +11,8 @@ jobs:
       - uses: actions/setup-node@v3
         with:
           node-version: "20"
-      - run: npm i
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@mellowtel-inc'
       - run: npm ci
       - uses: JS-DevTools/npm-publish@v3
         with:
