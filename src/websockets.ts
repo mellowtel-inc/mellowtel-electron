@@ -2,7 +2,7 @@ import WebSocket from 'isomorphic-ws';
 import { RateLimiter } from './local-rate-limiting/rate-limiter';
 import { Logger } from './logger/logger';
 import { VERSION } from './constants';
-import { cerealMain, makeFetchRequest, processUrl } from './utils/data-helpers';
+import { cerealMain, makeFetchRequest, processUrl, processHtmlContent } from './utils/data-helpers';
 import { getS3SignedUrls, uploadToS3, saveCrawl } from './utils/put-to-signed';
 import { DataRequest } from './utils/data-request';
 import { incrementRequestCount } from './storage/request-counter';
@@ -184,7 +184,7 @@ export class WebSocketManager {
     }
 
     private async processDataRequest(dataRequest: DataRequest, batch_execution = false, batch_id = ''): Promise<void> {
-        let processedContent: { html: string; markdown: string; } | undefined;
+        let processedContent: { html: string; markdown: string; screenshot?: Buffer; contentType?: string } | undefined;
         let fileNameBytes: string = "";
         if (dataRequest.method_endpoint) {
             const fetchResult = await makeFetchRequest(dataRequest);
@@ -192,8 +192,13 @@ export class WebSocketManager {
                 const { uploadUrl, fileName } = await getS3SignedUrls(dataRequest.recordID, fetchResult.contentType ?? 'application/octet-stream');
                 await uploadToS3(uploadUrl, fetchResult.contentType ?? 'application/octet-stream', fetchResult.content);
                 fileNameBytes = fileName;
+                // For saved files, don't process content further
+                processedContent = { html: '', markdown: '' };
+            } else {
+                // Convert Buffer to string and process like processUrl does
+                const contentString = fetchResult.content.toString('utf-8');
+                processedContent = await processHtmlContent(contentString, dataRequest);
             }
-            processedContent = { html: '', markdown: '' };
         } else {
             processedContent = await processUrl(dataRequest);
         }

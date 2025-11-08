@@ -138,7 +138,140 @@ async function executeAction(action: Action, win: BrowserWindow): Promise<void> 
             `);
             break;
         default:
-            console.warn(`Unknown action type: ${action.type}`);
+            Logger.log(`[executeAction]: Unknown action type: ${action.type}`);
+    }
+}
+
+export async function processHtmlContent(htmlString: string, dataRequest: DataRequest): Promise<{ html: string; markdown: string; screenshot: Buffer | undefined; contentType: string | undefined }> {
+    // Create a unique session for each window
+    const uniqueSession = session.fromPartition(`window-${Date.now()}-${Math.random()}`);
+
+    // Create the browser window
+    const win = new BrowserWindow({
+        show: false,
+        width: dataRequest.windowSize.width || 1709,
+        height: dataRequest.windowSize.height || 984,
+        webPreferences: {
+            offscreen: true,
+            nodeIntegration: false,
+            contextIsolation: true,
+            session: uniqueSession,
+            webSecurity: true,
+            allowRunningInsecureContent: false,
+            experimentalFeatures: false
+        }
+    });
+
+    try {
+        // Load the HTML content directly and wait for it to load
+        await new Promise<void>((resolve, reject) => {
+            win.webContents.on('dom-ready', () => {
+                resolve();
+            });
+            win.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {
+                reject(new Error(`Failed to load HTML: ${errorDescription}`));
+            });
+            win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(htmlString)}`);
+        });
+
+        // Wait if specified
+        if (dataRequest.waitBeforeScraping > 0) {
+            Logger.log(`[processHtmlContent]: Waiting ${dataRequest.waitBeforeScraping} seconds before processing`);
+            await delay(dataRequest.waitBeforeScraping * 1000);
+        }
+
+        // Remove CSS selectors if specified
+        if (dataRequest.removeCSSselectors) {
+            Logger.log(`[processHtmlContent]: Removing CSS selectors: ${dataRequest.removeCSSselectors}`);
+
+            const removeSelectorsScript = `
+                function removeSelectorsFromDocument(document, selectorsToRemove) {
+                    const defaultSelectorsToRemove = [
+                        "nav", "footer", "script", "style", "noscript", "svg", 
+                        '[role="alert"]', '[role="banner"]', '[role="dialog"]', 
+                        '[role="alertdialog"]', '[role="region"][aria-label*="skip" i]', 
+                        '[aria-modal="true"]'
+                    ];
+                    if (selectorsToRemove.length === 0) selectorsToRemove = defaultSelectorsToRemove;
+                    selectorsToRemove.forEach((selector) => {
+                        const elements = document.querySelectorAll(selector);
+                        elements.forEach((element) => element.remove());
+                    });
+                }
+                let removeCSSselectorsString = '${dataRequest.removeCSSselectors ?? 'default'}';
+                if (removeCSSselectorsString === "default") {
+                    removeSelectorsFromDocument(document, [])
+                } else if (removeCSSselectorsString !== "" && removeCSSselectorsString !== "none") {
+                    try {
+                        let selectors = JSON.parse(removeCSSselectorsString);
+                        removeSelectorsFromDocument(document, selectors);
+                    } catch (e) {
+                        console.log("Error parsing removeCSSselectors =>", e);
+                    }
+                }
+            `;
+            await win.webContents.executeJavaScript(removeSelectorsScript);
+            Logger.log(`[processHtmlContent]: CSS selectors removed`);
+        }
+
+        // Execute actions if specified
+        if (dataRequest.actions && dataRequest.actions.length > 0) {
+            Logger.log(`[processHtmlContent]: Executing ${dataRequest.actions.length} actions`);
+            for (const action of dataRequest.actions) {
+                Logger.log(`[processHtmlContent]: Executing action: ${JSON.stringify(action)}`);
+                await executeAction(action, win);
+            }
+            Logger.log(`[processHtmlContent]: Actions executed`);
+        }
+
+        // Get the processed HTML content
+        const content = await win.webContents.executeJavaScript('document.documentElement.outerHTML');
+        Logger.log(`[processHtmlContent]: Processed HTML content`);
+
+        // Handle screenshots if requested
+        let screenshot: Buffer | undefined;
+        if (dataRequest.htmlVisualizer) {
+            Logger.log('[processHtmlContent]: Taking screenshot');
+            if (dataRequest.fullpageScreenshot) {
+                Logger.log('[processHtmlContent]: Taking full page screenshot');
+                screenshot = await takeFullPageScreenshot(win);
+                Logger.log(`[processHtmlContent]: Full page screenshot captured`);
+            } else {
+                screenshot = (await win.webContents.capturePage()).toPNG();
+                Logger.log(`[processHtmlContent]: Screenshot captured`);
+            }
+        }
+
+        // Convert to markdown
+        const turndownService = new TurndownService({
+            headingStyle: 'atx',
+            codeBlockStyle: 'fenced',
+            bulletListMarker: '*'
+        });
+
+        let markdown = turndownService.turndown(content);
+        Logger.log(`[processHtmlContent]: Converted HTML to Markdown`);
+
+        return {
+            html: content,
+            markdown: markdown,
+            screenshot: screenshot,
+            contentType: screenshot ? 'image/png' : undefined
+        };
+    } catch (error) {
+        Logger.error(`[processHtmlContent]: Error processing HTML content - ${error}`);
+        // Return original content on error
+        return {
+            html: htmlString,
+            markdown: htmlString,
+            screenshot: undefined,
+            contentType: undefined
+        };
+    } finally {
+        if (!win.isDestroyed()) {
+            win.close();
+        }
+        Logger.log(`[processHtmlContent]: Browser window closed`);
     }
 }
 
