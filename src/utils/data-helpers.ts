@@ -146,6 +146,12 @@ export async function processHtmlContent(htmlString: string, dataRequest: DataRe
     // Create a unique session for each window
     const uniqueSession = session.fromPartition(`window-${Date.now()}-${Math.random()}`);
 
+    // Prevent downloads from being saved to disk
+    uniqueSession.on('will-download', (event, item, webContents) => {
+        Logger.log('[processHtmlContent]: Download blocked - preventing file from being saved');
+        event.preventDefault();
+    });
+
     // Create the browser window
     const win = new BrowserWindow({
         show: false,
@@ -280,6 +286,12 @@ export async function processUrl(dataRequest: DataRequest): Promise<{ html: stri
 
     // In-memory unique session for each window to avoid tracking and disc usage
     const uniqueSession = session.fromPartition(`window-${Date.now()}-${Math.random()}`);
+
+    // Prevent downloads from being saved to disk
+    uniqueSession.on('will-download', (event, item, webContents) => {
+        Logger.log('[processUrl]: Download blocked - preventing file from being saved');
+        event.preventDefault();
+    });
 
     // Create the browser window with stealth features
     const win = new BrowserWindow({
