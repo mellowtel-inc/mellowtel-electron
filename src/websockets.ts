@@ -2,7 +2,8 @@ import WebSocket from 'isomorphic-ws';
 import { RateLimiter } from './local-rate-limiting/rate-limiter';
 import { Logger } from './logger/logger';
 import { VERSION } from './constants';
-import { cerealMain, makeFetchRequest, processUrl, processHtmlContent } from './utils/data-helpers';
+import { makeFetchRequest, processUrl, processHtmlContent } from './utils/data-helpers';
+import { getCerealManager } from './utils/cereal-manager';
 import { getS3SignedUrls, uploadToS3, saveCrawl } from './utils/put-to-signed';
 import { DataRequest } from './utils/data-request';
 import { incrementRequestCount } from './storage/request-counter';
@@ -24,6 +25,8 @@ export class WebSocketManager {
 
     private constructor() {
         this.identifier = '';
+        const totalMemoryGB = (os.totalmem() / (1024 * 1024 * 1024)).toFixed(2);
+        Logger.log(`[WebSocketManager]: System RAM: ${totalMemoryGB}GB`);
     }
 
     public static getInstance(): WebSocketManager {
@@ -83,7 +86,7 @@ export class WebSocketManager {
         if (!this.ws) return;
 
         this.ws.onopen = () => {
-            Logger.log("[WebSocketManager]: Connection established");
+            Logger.log("[WebSocketManager]: Connection established!!!");
             this.reconnectAttempts = 0;
             this.startPing();
         };
@@ -98,6 +101,7 @@ export class WebSocketManager {
         };
 
         this.ws.onmessage = async (data: any) => {
+            Logger.log(`[WebSocketManager]: Message received from server`);
             await this.handleIncomingMessage(data);
         };
 
@@ -160,7 +164,12 @@ export class WebSocketManager {
                     return;
                 }
 
-                await this.processDataRequest(dataRequest);
+                // Process request directly - window pool handles concurrency control
+                // Requests that timeout (50s) will be automatically dropped
+                this.processDataRequest(dataRequest).catch(error => {
+                    Logger.error(`[WebSocketManager]: Error processing request for ${dataRequest.url} - ${error.message}`);
+                    // Request is dropped on error (including timeout errors from window pool)
+                });
             }
         } catch (error) {
             Logger.error(`[WebSocketManager]: Error handling message - ${error}`);
@@ -172,10 +181,14 @@ export class WebSocketManager {
             const chunk = requests.slice(i, i + parallelExecutions);
             const promises = chunk.map(requestData => {
                 const dataRequest = DataRequest.fromJson(requestData);
-                return this.processDataRequest(dataRequest, true, batch_id);
+                // Catch errors (including timeouts) to prevent one failure from stopping the batch
+                return this.processDataRequest(dataRequest, true, batch_id).catch(error => {
+                    Logger.error(`[WebSocketManager]: Batch request failed for ${dataRequest.url} - ${error.message}`);
+                    // Request is dropped on error (including timeout errors from window pool)
+                });
             });
 
-            await Promise.all(promises);
+            await Promise.allSettled(promises);
 
             if (i + parallelExecutions < requests.length) {
                 await new Promise(resolve => setTimeout(resolve, delay));
@@ -206,15 +219,23 @@ export class WebSocketManager {
         let cereal_result: any = {};
         try {
             if (JSON.parse(dataRequest.cerealObject).useCereal) {
-                Logger.log("[processDataRequest] : using cereal [🥣]");
-                cereal_result = await cerealMain(dataRequest.cerealObject, dataRequest.recordID, processedContent.html);
+                Logger.log("[processDataRequest] : using cereal [🥣] with optimized CerealManager");
+                
+                // Use optimized CerealManager instead of cerealMain
+                const cerealManager = getCerealManager();
+                cereal_result = await cerealManager.processCerealJob(
+                    dataRequest.cerealObject,
+                    dataRequest.recordID,
+                    processedContent.html
+                );
+                
                 Logger.log("[processDataRequest] : cereal_result => ");
                 Logger.log(cereal_result);
                 Logger.log("############################################");
             }
         } catch (e) {
             Logger.log(
-                "[processDataRequest] : error in parsing cerealObject => ",
+                "[processDataRequest] : error in cereal processing => ",
                 e,
             );
             cereal_result = {};

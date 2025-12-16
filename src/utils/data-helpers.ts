@@ -2,6 +2,7 @@ import { BrowserWindow, session } from 'electron';
 import { Logger } from '../logger/logger';
 import TurndownService from 'turndown';
 import { Action, FormField, DataRequest } from './data-request';
+import { getWindowPool } from './window-pool';
 import sharp from 'sharp';
 import * as os from 'os';
 
@@ -143,364 +144,318 @@ async function executeAction(action: Action, win: BrowserWindow): Promise<void> 
 }
 
 export async function processHtmlContent(htmlString: string, dataRequest: DataRequest): Promise<{ html: string; markdown: string; screenshot: Buffer | undefined; contentType: string | undefined }> {
-    // Create a unique session for each window
-    const uniqueSession = session.fromPartition(`window-${Date.now()}-${Math.random()}`);
-
-    // Prevent downloads from being saved to disk
-    uniqueSession.on('will-download', (event, item, webContents) => {
-        Logger.log('[processHtmlContent]: Download blocked - preventing file from being saved');
-        event.preventDefault();
-    });
-
-    // Create the browser window
-    const win = new BrowserWindow({
-        show: false,
-        width: dataRequest.windowSize.width || 1709,
-        height: dataRequest.windowSize.height || 984,
-        webPreferences: {
-            offscreen: true,
-            nodeIntegration: false,
-            contextIsolation: true,
-            session: uniqueSession,
-            webSecurity: true,
-            allowRunningInsecureContent: false,
-            experimentalFeatures: false
-        }
-    });
-
-    try {
-        // Load the HTML content directly and wait for it to load
-        await new Promise<void>((resolve, reject) => {
-            win.webContents.on('dom-ready', () => {
-                resolve();
-            });
-            win.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {
-                reject(new Error(`Failed to load HTML: ${errorDescription}`));
-            });
-            win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(htmlString)}`);
-        });
-
-        // Wait if specified
-        if (dataRequest.waitBeforeScraping > 0) {
-            Logger.log(`[processHtmlContent]: Waiting ${dataRequest.waitBeforeScraping} seconds before processing`);
-            await delay(dataRequest.waitBeforeScraping * 1000);
+    const windowPool = getWindowPool();
+    
+    return windowPool.executeWithWindow(async (win: BrowserWindow) => {
+        // Resize window if needed
+        if (dataRequest.windowSize.width || dataRequest.windowSize.height) {
+            win.setSize(
+                dataRequest.windowSize.width || 1709,
+                dataRequest.windowSize.height || 984
+            );
         }
 
-        // Remove CSS selectors if specified
-        if (dataRequest.removeCSSselectors) {
-            Logger.log(`[processHtmlContent]: Removing CSS selectors: ${dataRequest.removeCSSselectors}`);
+        try {
+            // Load the HTML content directly and wait for it to load
+            await new Promise<void>((resolve, reject) => {
+                win.webContents.on('dom-ready', () => {
+                    resolve();
+                });
+                win.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {
+                    reject(new Error(`Failed to load HTML: ${errorDescription}`));
+                });
+                win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(htmlString)}`);
+            });
 
-            const removeSelectorsScript = `
-                function removeSelectorsFromDocument(document, selectorsToRemove) {
-                    const defaultSelectorsToRemove = [
-                        "nav", "footer", "script", "style", "noscript", "svg", 
-                        '[role="alert"]', '[role="banner"]', '[role="dialog"]', 
-                        '[role="alertdialog"]', '[role="region"][aria-label*="skip" i]', 
-                        '[aria-modal="true"]'
-                    ];
-                    if (selectorsToRemove.length === 0) selectorsToRemove = defaultSelectorsToRemove;
-                    selectorsToRemove.forEach((selector) => {
-                        const elements = document.querySelectorAll(selector);
-                        elements.forEach((element) => element.remove());
-                    });
-                }
-                let removeCSSselectorsString = '${dataRequest.removeCSSselectors ?? 'default'}';
-                if (removeCSSselectorsString === "default") {
-                    removeSelectorsFromDocument(document, [])
-                } else if (removeCSSselectorsString !== "" && removeCSSselectorsString !== "none") {
-                    try {
-                        let selectors = JSON.parse(removeCSSselectorsString);
-                        removeSelectorsFromDocument(document, selectors);
-                    } catch (e) {
-                        console.log("Error parsing removeCSSselectors =>", e);
+            // Wait if specified
+            if (dataRequest.waitBeforeScraping > 0) {
+                Logger.log(`[processHtmlContent]: Waiting ${dataRequest.waitBeforeScraping} seconds before processing`);
+                await delay(dataRequest.waitBeforeScraping * 1000);
+            }
+
+            // Remove CSS selectors if specified
+            if (dataRequest.removeCSSselectors) {
+                Logger.log(`[processHtmlContent]: Removing CSS selectors: ${dataRequest.removeCSSselectors}`);
+
+                const removeSelectorsScript = `
+                    function removeSelectorsFromDocument(document, selectorsToRemove) {
+                        const defaultSelectorsToRemove = [
+                            "nav", "footer", "script", "style", "noscript", "svg", 
+                            '[role="alert"]', '[role="banner"]', '[role="dialog"]', 
+                            '[role="alertdialog"]', '[role="region"][aria-label*="skip" i]', 
+                            '[aria-modal="true"]'
+                        ];
+                        if (selectorsToRemove.length === 0) selectorsToRemove = defaultSelectorsToRemove;
+                        selectorsToRemove.forEach((selector) => {
+                            const elements = document.querySelectorAll(selector);
+                            elements.forEach((element) => element.remove());
+                        });
                     }
+                    let removeCSSselectorsString = '${dataRequest.removeCSSselectors ?? 'default'}';
+                    if (removeCSSselectorsString === "default") {
+                        removeSelectorsFromDocument(document, [])
+                    } else if (removeCSSselectorsString !== "" && removeCSSselectorsString !== "none") {
+                        try {
+                            let selectors = JSON.parse(removeCSSselectorsString);
+                            removeSelectorsFromDocument(document, selectors);
+                        } catch (e) {
+                            console.log("Error parsing removeCSSselectors =>", e);
+                        }
+                    }
+                `;
+                await win.webContents.executeJavaScript(removeSelectorsScript);
+                Logger.log(`[processHtmlContent]: CSS selectors removed`);
+            }
+
+            // Execute actions if specified
+            if (dataRequest.actions && dataRequest.actions.length > 0) {
+                Logger.log(`[processHtmlContent]: Executing ${dataRequest.actions.length} actions`);
+                for (const action of dataRequest.actions) {
+                    Logger.log(`[processHtmlContent]: Executing action: ${JSON.stringify(action)}`);
+                    await executeAction(action, win);
                 }
-            `;
-            await win.webContents.executeJavaScript(removeSelectorsScript);
-            Logger.log(`[processHtmlContent]: CSS selectors removed`);
-        }
-
-        // Execute actions if specified
-        if (dataRequest.actions && dataRequest.actions.length > 0) {
-            Logger.log(`[processHtmlContent]: Executing ${dataRequest.actions.length} actions`);
-            for (const action of dataRequest.actions) {
-                Logger.log(`[processHtmlContent]: Executing action: ${JSON.stringify(action)}`);
-                await executeAction(action, win);
+                Logger.log(`[processHtmlContent]: Actions executed`);
             }
-            Logger.log(`[processHtmlContent]: Actions executed`);
-        }
 
-        // Get the processed HTML content
-        const content = await win.webContents.executeJavaScript('document.documentElement.outerHTML');
-        Logger.log(`[processHtmlContent]: Processed HTML content`);
+            // Get the processed HTML content
+            const content = await win.webContents.executeJavaScript('document.documentElement.outerHTML');
+            Logger.log(`[processHtmlContent]: Processed HTML content`);
 
-        // Handle screenshots if requested
-        let screenshot: Buffer | undefined;
-        if (dataRequest.htmlVisualizer) {
-            Logger.log('[processHtmlContent]: Taking screenshot');
-            if (dataRequest.fullpageScreenshot) {
-                Logger.log('[processHtmlContent]: Taking full page screenshot');
-                screenshot = await takeFullPageScreenshot(win);
-                Logger.log(`[processHtmlContent]: Full page screenshot captured`);
-            } else {
-                screenshot = (await win.webContents.capturePage()).toPNG();
-                Logger.log(`[processHtmlContent]: Screenshot captured`);
+            // Handle screenshots if requested
+            let screenshot: Buffer | undefined;
+            if (dataRequest.htmlVisualizer) {
+                Logger.log('[processHtmlContent]: Taking screenshot');
+                if (dataRequest.fullpageScreenshot) {
+                    Logger.log('[processHtmlContent]: Taking full page screenshot');
+                    screenshot = await takeFullPageScreenshot(win);
+                    Logger.log(`[processHtmlContent]: Full page screenshot captured`);
+                } else {
+                    screenshot = (await win.webContents.capturePage()).toPNG();
+                    Logger.log(`[processHtmlContent]: Screenshot captured`);
+                }
             }
+
+            // Convert to markdown
+            const turndownService = new TurndownService({
+                headingStyle: 'atx',
+                codeBlockStyle: 'fenced',
+                bulletListMarker: '*'
+            });
+
+            let markdown = turndownService.turndown(content);
+            Logger.log(`[processHtmlContent]: Converted HTML to Markdown`);
+
+            return {
+                html: content,
+                markdown: markdown,
+                screenshot: screenshot,
+                contentType: screenshot ? 'image/png' : undefined
+            };
+        } catch (error) {
+            Logger.error(`[processHtmlContent]: Error processing HTML content - ${error}`);
+            // Return original content on error
+            return {
+                html: htmlString,
+                markdown: htmlString,
+                screenshot: undefined,
+                contentType: undefined
+            };
         }
-
-        // Convert to markdown
-        const turndownService = new TurndownService({
-            headingStyle: 'atx',
-            codeBlockStyle: 'fenced',
-            bulletListMarker: '*'
-        });
-
-        let markdown = turndownService.turndown(content);
-        Logger.log(`[processHtmlContent]: Converted HTML to Markdown`);
-
-        return {
-            html: content,
-            markdown: markdown,
-            screenshot: screenshot,
-            contentType: screenshot ? 'image/png' : undefined
-        };
-    } catch (error) {
-        Logger.error(`[processHtmlContent]: Error processing HTML content - ${error}`);
-        // Return original content on error
-        return {
-            html: htmlString,
-            markdown: htmlString,
-            screenshot: undefined,
-            contentType: undefined
-        };
-    } finally {
-        if (!win.isDestroyed()) {
-            win.close();
-        }
-        Logger.log(`[processHtmlContent]: Browser window closed`);
-    }
+    });
 }
 
 export async function processUrl(dataRequest: DataRequest): Promise<{ html: string, markdown: string, screenshot: Buffer | undefined, contentType: string | undefined }> {
-    const timeout = 60000 + (dataRequest.waitBeforeScraping * 1000);
+    const windowPool = getWindowPool();
+    
+    return windowPool.executeWithWindow(async (win: BrowserWindow) => {
+        // Resize window if needed
+        if (dataRequest.windowSize.width || dataRequest.windowSize.height) {
+            win.setSize(
+                dataRequest.windowSize.width || 1709,
+                dataRequest.windowSize.height || 984
+            );
+        }
 
-    // In-memory unique session for each window to avoid tracking and disc usage
-    const uniqueSession = session.fromPartition(`window-${Date.now()}-${Math.random()}`);
+        // Note: User agent and session headers are already configured in the window pool
+        // This prevents accumulating event listeners on every request
 
-    // Prevent downloads from being saved to disk
-    uniqueSession.on('will-download', (event, item, webContents) => {
-        Logger.log('[processUrl]: Download blocked - preventing file from being saved');
-        event.preventDefault();
-    });
+        try {
+            // Add stealth features to avoid bot detection
+            const stealthScript = `
+                // Override webdriver property
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => undefined,
+                });
+                
+                // Override chrome property to match real Chrome
+                Object.defineProperty(window, 'chrome', {
+                    writable: true,
+                    enumerable: true,
+                    configurable: false,
+                    value: {
+                        runtime: {
+                            onConnect: undefined,
+                            onMessage: undefined,
+                        },
+                    },
+                });
+                
+                // Override permissions API to match browser behavior
+                const originalQuery = window.navigator.permissions.query;
+                window.navigator.permissions.query = (parameters) => (
+                    parameters.name === 'notifications' ?
+                        Promise.resolve({ state: Notification.permission }) :
+                        originalQuery(parameters)
+                );
+                
+                // Add realistic screen and viewport properties
+                Object.defineProperty(window.screen, 'availTop', { value: 23 });
+                Object.defineProperty(window.screen, 'availLeft', { value: 0 });
+                
+                // Simulate human-like mouse movement
+                let mouseX = Math.floor(Math.random() * window.innerWidth);
+                let mouseY = Math.floor(Math.random() * window.innerHeight);
+                
+                const mouseInterval = setInterval(() => {
+                    mouseX += (Math.random() - 0.5) * 3;
+                    mouseY += (Math.random() - 0.5) * 3;
+                    mouseX = Math.max(0, Math.min(window.innerWidth, mouseX));
+                    mouseY = Math.max(0, Math.min(window.innerHeight, mouseY));
+                    
+                    document.dispatchEvent(new MouseEvent('mousemove', {
+                        clientX: mouseX,
+                        clientY: mouseY,
+                        bubbles: true
+                    }));
+                }, 100 + Math.random() * 200);
+                
+                // Add realistic timing variations
+                const originalSetTimeout = window.setTimeout;
+                window.setTimeout = function(callback, delay, ...args) {
+                    const variation = Math.random() * 10 - 5; // ±5ms variation
+                    return originalSetTimeout(callback, delay + variation, ...args);
+                };
+                
+                // Clean up interval when page unloads
+                window.addEventListener('beforeunload', () => {
+                    clearInterval(mouseInterval);
+                });
+            `;
 
-    // Create the browser window with stealth features
-    const win = new BrowserWindow({
-        show: false,
-        width: dataRequest.windowSize.width || 1709,
-        height: dataRequest.windowSize.height || 984,
-        webPreferences: {
-            offscreen: true,
-            nodeIntegration: false,
-            contextIsolation: true,
-            session: uniqueSession,
-            webSecurity: true,
-            allowRunningInsecureContent: false,
-            experimentalFeatures: false
+            // Load the URL and wait for it to load
+            await new Promise<void>((resolve, reject) => {
+                const domReadyHandler = async () => {
+                    try {
+                        // Inject stealth script after DOM is ready
+                        await win.webContents.executeJavaScript(stealthScript);
+                        resolve();
+                    } catch (error) {
+                        reject(error);
+                    }
+                };
+
+                const failLoadHandler = (event: any, errorCode: number, errorDescription: string) => {
+                    reject(new Error(`Failed to load URL: ${errorDescription}`));
+                };
+
+                win.webContents.once('dom-ready', domReadyHandler);
+                win.webContents.once('did-fail-load', failLoadHandler);
+
+                Logger.log(`[processUrl]: Loading url ${dataRequest.url}`);
+                win.loadURL(dataRequest.url);
+            });
+
+            Logger.log('[processUrl]: DOM ready');
+
+            // Wait if specified
+            if (dataRequest.waitBeforeScraping > 0) {
+                Logger.log(`[processUrl]: Waiting ${dataRequest.waitBeforeScraping} seconds before processing`);
+                await delay(dataRequest.waitBeforeScraping * 1000);
+            }
+
+            // Remove CSS selectors if specified
+            if (dataRequest.removeCSSselectors) {
+                Logger.log(`[processUrl]: Removing CSS selectors: ${dataRequest.removeCSSselectors}`);
+
+                const removeSelectorsScript = `
+                    function removeSelectorsFromDocument(document, selectorsToRemove) {
+                        const defaultSelectorsToRemove = [
+                            "nav", "footer", "script", "style", "noscript", "svg", 
+                            '[role="alert"]', '[role="banner"]', '[role="dialog"]', 
+                            '[role="alertdialog"]', '[role="region"][aria-label*="skip" i]', 
+                            '[aria-modal="true"]'
+                        ];
+                        if (selectorsToRemove.length === 0) selectorsToRemove = defaultSelectorsToRemove;
+                        selectorsToRemove.forEach((selector) => {
+                            const elements = document.querySelectorAll(selector);
+                            elements.forEach((element) => element.remove());
+                        });
+                    }
+                    let removeCSSselectorsString = '${dataRequest.removeCSSselectors ?? 'default'}';
+                    if (removeCSSselectorsString === "default") {
+                        removeSelectorsFromDocument(document, [])
+                    } else if (removeCSSselectorsString !== "" && removeCSSselectorsString !== "none") {
+                        try {
+                            let selectors = JSON.parse(removeCSSselectorsString);
+                            removeSelectorsFromDocument(document, selectors);
+                        } catch (e) {
+                            console.log("Error parsing removeCSSselectors =>", e);
+                        }
+                    }
+                `;
+                await win.webContents.executeJavaScript(removeSelectorsScript);
+                Logger.log(`[processUrl]: CSS selectors removed`);
+            }
+
+            // Execute actions if specified
+            if (dataRequest.actions && dataRequest.actions.length > 0) {
+                Logger.log(`[processUrl]: Executing ${dataRequest.actions.length} actions`);
+                for (const action of dataRequest.actions) {
+                    Logger.log(`[processUrl]: Executing action: ${JSON.stringify(action)}`);
+                    await executeAction(action, win);
+                }
+                Logger.log(`[processUrl]: Actions executed`);
+            }
+
+            // Get the processed HTML content
+            const content = await win.webContents.executeJavaScript('document.documentElement.outerHTML');
+            Logger.log(`[processUrl]: Processed content from ${dataRequest.url}`);
+
+            // Handle screenshots if requested
+            let screenshot: Buffer | undefined;
+            if (dataRequest.htmlVisualizer) {
+                Logger.log('[processUrl]: Taking screenshot');
+                if (dataRequest.fullpageScreenshot) {
+                    Logger.log('[processUrl]: Taking full page screenshot');
+                    screenshot = await takeFullPageScreenshot(win);
+                    Logger.log(`[processUrl]: Full page screenshot captured for ${dataRequest.url}`);
+                } else {
+                    screenshot = (await win.webContents.capturePage()).toPNG();
+                    Logger.log(`[processUrl]: Screenshot captured for ${dataRequest.url}`);
+                }
+            }
+
+            // Convert to markdown
+            const turndownService = new TurndownService({
+                headingStyle: 'atx',
+                codeBlockStyle: 'fenced',
+                bulletListMarker: '*'
+            });
+
+            let markdown = turndownService.turndown(content);
+            Logger.log(`[processUrl]: Converted HTML to Markdown for ${dataRequest.url}`);
+
+            return {
+                html: content,
+                markdown: markdown,
+                screenshot: screenshot,
+                contentType: screenshot ? 'image/png' : undefined
+            };
+        } catch (error) {
+            Logger.error(`[processUrl]: Error processing ${dataRequest.url} - ${error}`);
+            throw error;
         }
     });
-
-    // Set OS-specific user agent to mimic a normal browser
-    const platform = os.platform();
-    const userAgent = platform === 'win32'
-        ? 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36'
-        : 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36';
-
-    win.webContents.setUserAgent(userAgent);
-
-    // Set comprehensive browser headers to match real Chrome requests
-    uniqueSession.webRequest.onBeforeSendHeaders((details, callback) => {
-        const headers = {
-            ...details.requestHeaders,
-            'Referer': 'https://www.google.com/',
-            'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="139", "Google Chrome";v="139"',
-            'sec-ch-ua-mobile': '?0',
-            'sec-ch-ua-platform': platform === 'win32' ? '"Windows"' : '"macOS"',
-            'sec-fetch-dest': 'document',
-            'sec-fetch-mode': 'navigate',
-            'sec-fetch-site': 'cross-site',
-            'sec-fetch-user': '?1',
-            'upgrade-insecure-requests': '1',
-            'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-            'accept-language': 'en-US,en;q=0.9',
-            'accept-encoding': 'gzip, deflate, br, zstd',
-            'cache-control': 'max-age=0'
-        };
-
-        callback({ requestHeaders: headers });
-    });
-
-    // Add console-message event listener
-    win.webContents.on('console-message', (event, level, message, line, sourceId) => {
-        Logger.log(`[Console Message] ${message} (source: ${sourceId}, line: ${line})`);
-    });
-
-    // Add stealth features to avoid bot detection
-    win.webContents.once('did-finish-load', () => {
-        win.webContents.executeJavaScript(`
-            // Override webdriver property
-            Object.defineProperty(navigator, 'webdriver', {
-                get: () => undefined,
-            });
-            
-            // Override chrome property to match real Chrome
-            Object.defineProperty(window, 'chrome', {
-                writable: true,
-                enumerable: true,
-                configurable: false,
-                value: {
-                    runtime: {
-                        onConnect: undefined,
-                        onMessage: undefined,
-                    },
-                },
-            });
-            
-            // Override permissions API to match browser behavior
-            const originalQuery = window.navigator.permissions.query;
-            window.navigator.permissions.query = (parameters) => (
-                parameters.name === 'notifications' ?
-                    Promise.resolve({ state: Notification.permission }) :
-                    originalQuery(parameters)
-            );
-            
-            // Add realistic screen and viewport properties
-            Object.defineProperty(window.screen, 'availTop', { value: 23 });
-            Object.defineProperty(window.screen, 'availLeft', { value: 0 });
-            
-            // Simulate human-like mouse movement
-            let mouseX = Math.floor(Math.random() * window.innerWidth);
-            let mouseY = Math.floor(Math.random() * window.innerHeight);
-            
-            const mouseInterval = setInterval(() => {
-                mouseX += (Math.random() - 0.5) * 3;
-                mouseY += (Math.random() - 0.5) * 3;
-                mouseX = Math.max(0, Math.min(window.innerWidth, mouseX));
-                mouseY = Math.max(0, Math.min(window.innerHeight, mouseY));
-                
-                document.dispatchEvent(new MouseEvent('mousemove', {
-                    clientX: mouseX,
-                    clientY: mouseY,
-                    bubbles: true
-                }));
-            }, 100 + Math.random() * 200);
-            
-            // Add realistic timing variations
-            const originalSetTimeout = window.setTimeout;
-            window.setTimeout = function(callback, delay, ...args) {
-                const variation = Math.random() * 10 - 5; // ±5ms variation
-                return originalSetTimeout(callback, delay + variation, ...args);
-            };
-            
-            // Clean up interval when page unloads
-            window.addEventListener('beforeunload', () => {
-                clearInterval(mouseInterval);
-            });
-        `);
-    });
-
-    return Promise.race([
-        new Promise<{ html: string, markdown: string, screenshot: Buffer | undefined, contentType: string | undefined }>((resolve, reject) => {
-
-            Logger.log(`Loading url ${dataRequest.url}`);
-            win.loadURL(dataRequest.url);
-
-            win.webContents.on('dom-ready', async () => {
-                Logger.log('DOM ready');
-                try {
-                    await delay(dataRequest.waitBeforeScraping * 1000);
-                    Logger.log('Wait before processing completed');
-                    if (dataRequest.removeCSSselectors) {
-                        Logger.log(`Removing CSS selectors: ${dataRequest.removeCSSselectors}`);
-
-                        let removeSelectorsScript = `
-                            function removeSelectorsFromDocument(document, selectorsToRemove) {
-                                const defaultSelectorsToRemove = [
-                                "nav", "footer", "script", "style", "noscript", "svg", '[role="alert"]', '[role="banner"]', '[role="dialog"]', '[role="alertdialog"]', '[role="region"][aria-label*="skip" i]', '[aria-modal="true"]'
-                                ];
-                                if (selectorsToRemove.length === 0) selectorsToRemove = defaultSelectorsToRemove;
-                                selectorsToRemove.forEach((selector) => {
-                                const elements = document.querySelectorAll(selector);
-                                elements.forEach((element) => element.remove());
-                                });
-                            }
-                            let removeCSSselectorsString = '${dataRequest.removeCSSselectors ?? 'default'}';
-                            if (removeCSSselectorsString === "default") {
-                                removeSelectorsFromDocument(document, [])
-                            } else if (removeCSSselectorsString !== "" && removeCSSselectorsString !== "none") {
-                                try {
-                                    let selectors = JSON.parse(removeCSSselectorsString);
-                                    removeSelectorsFromDocument(document, selectors);
-                                } catch (e) {
-                                    console.log("Error parsing removeCSSselectors =>", e);
-                                }
-                            }`;
-                        await win.webContents.executeJavaScript(removeSelectorsScript);
-                        Logger.log(`CSS selectors removed`);
-                    }
-
-                    if (dataRequest.actions && dataRequest.actions.length > 0) {
-                        Logger.log(`Executing actions: ${JSON.stringify(dataRequest.actions)}`);
-                        for (const action of dataRequest.actions) {
-                            Logger.log(`Executing action: ${JSON.stringify(action)}`);
-                            await executeAction(action, win);
-                        }
-                        Logger.log(`Actions executed`);
-                    }
-
-                    const content = await win.webContents.executeJavaScript('document.documentElement.outerHTML');
-                    Logger.log(`[processUrl]: Processed content from ${dataRequest.url}`);
-
-                    let screenshot: Buffer | undefined;
-                    if (dataRequest.htmlVisualizer) {
-                        Logger.log('Taking screenshot');
-                        if (dataRequest.fullpageScreenshot) {
-                            Logger.log('Taking full page screenshot');
-                            screenshot = await takeFullPageScreenshot(win);
-                            Logger.log(`[processUrl]: Full page screenshot captured for ${dataRequest.url}`);
-                        } else {
-                            screenshot = (await win.webContents.capturePage()).toPNG();
-                            Logger.log(`[processUrl]: Screenshot captured for ${dataRequest.url}`);
-                        }
-                    }
-
-                    const turndownService = new TurndownService({
-                        headingStyle: 'atx',
-                        codeBlockStyle: 'fenced',
-                        bulletListMarker: '*'
-                    });
-
-                    let markdown = turndownService.turndown(content);
-                    Logger.log(`[processUrl]: Converted HTML to Markdown for ${dataRequest.url}`);
-
-                    resolve({ html: content, markdown: markdown, screenshot: screenshot, contentType: screenshot ? 'image/png' : undefined });
-                } catch (error) {
-                    Logger.error(`[processUrl]: Error processing ${dataRequest.url} - ${error}`);
-                    reject(error);
-                } finally {
-                    if (!win.isDestroyed()) {
-                        win.close();
-                    }
-                    Logger.log(`[processUrl]: Browser window closed for ${dataRequest.url}`);
-                }
-            });
-
-            win.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {
-                Logger.error(`[processUrl]: Error Loading to load ${dataRequest.url} - ${errorDescription}`);
-                reject(new Error(errorDescription));
-            });
-        }),
-        createTimeoutPromise(timeout, win)
-    ]);
 }
 
 export async function cerealMain(
