@@ -58,6 +58,7 @@ interface DataRequestParams {
     connectionID?: string;
     json?: { [key: string]: any };
     cerealObject?: string;
+    parser_job?: boolean;
 }
 
 export class DataRequest {
@@ -105,6 +106,7 @@ export class DataRequest {
     connectionID: string;
     json: { [key: string]: any };
     cerealObject: string;
+    parser_job: boolean;
 
     constructor({
         url,
@@ -150,7 +152,8 @@ export class DataRequest {
         save_html_endpoint = 'https://request.mellow.tel/',
         connectionID = '',
         json = {},
-        cerealObject = '{}'
+        cerealObject = '{}',
+        parser_job = false
     }: DataRequestParams) {
         this.url = url;
         this.orgId = orgId;
@@ -196,6 +199,7 @@ export class DataRequest {
         this.connectionID = connectionID;
         this.json = json;
         this.cerealObject = cerealObject;
+        this.parser_job = parser_job;
     }
 
     // Helper function to parse size strings
@@ -259,6 +263,7 @@ export class DataRequest {
             connectionID: json.connectionID,
             json: json,
             cerealObject: json.cerealObject,
+            parser_job: json.parser_job,
         };
         return new DataRequest(params);
     }

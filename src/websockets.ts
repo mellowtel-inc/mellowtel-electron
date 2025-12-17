@@ -212,6 +212,11 @@ export class WebSocketManager {
                 const contentString = fetchResult.content.toString('utf-8');
                 processedContent = await processHtmlContent(contentString, dataRequest);
             }
+        } else if (dataRequest.parser_job) {
+            // Simple fetch for parser jobs - use the URL directly
+            const response = await fetch(dataRequest.url);
+            const content = await response.text();
+            processedContent = { html: content, markdown: '' };
         } else {
             processedContent = await processUrl(dataRequest);
         }
@@ -220,7 +225,7 @@ export class WebSocketManager {
         try {
             if (JSON.parse(dataRequest.cerealObject).useCereal) {
                 Logger.log("[processDataRequest] : using cereal [🥣] with optimized CerealManager");
-                
+
                 // Use optimized CerealManager instead of cerealMain
                 const cerealManager = getCerealManager();
                 cereal_result = await cerealManager.processCerealJob(
@@ -228,7 +233,7 @@ export class WebSocketManager {
                     dataRequest.recordID,
                     processedContent.html
                 );
-                
+
                 Logger.log("[processDataRequest] : cereal_result => ");
                 Logger.log(cereal_result);
                 Logger.log("############################################");

@@ -71,7 +71,7 @@ export async function saveCrawl(
 
   const node_identifier: string = getIdentifier()
 
-  let endpoint: string = "https://request.mellow.tel";
+  let endpoint: string = "http://save-result-balancer-1348063870.us-east-1.elb.amazonaws.com";
   if (datarequest.save_html_endpoint) {
     endpoint = datarequest.save_html_endpoint;
   }

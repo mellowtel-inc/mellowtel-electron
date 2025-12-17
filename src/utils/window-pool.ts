@@ -21,6 +21,7 @@ interface PooledWindow {
     createdAt: number;
     usageCount: number;
     lastUsedAt: number;
+    needsRotation: boolean; // Flag to mark window for rotation when it becomes idle
 }
 
 interface WindowPoolConfig {
@@ -187,7 +188,8 @@ export class WindowPool {
             inUse: false,
             createdAt: Date.now(),
             usageCount: 0,
-            lastUsedAt: Date.now()
+            lastUsedAt: Date.now(),
+            needsRotation: false
         };
 
         this.pool.push(pooledWindow);
@@ -212,8 +214,21 @@ export class WindowPool {
             throw error;
         }
 
-        // Find an available window
-        let pooledWindow = this.pool.find(pw => !pw.inUse && !pw.window.isDestroyed());
+        // Clean up any destroyed windows from the pool first
+        const destroyedWindows = this.pool.filter(pw => pw.window.isDestroyed());
+        for (const pw of destroyedWindows) {
+            Logger.log(`[WindowPool] Removing destroyed window ${pw.id} from pool during acquisition`);
+            this.removeWindowFromPool(pw.id);
+        }
+
+        // Find an available window that is not destroyed and not marked for rotation
+        // Prefer healthy windows over those marked for rotation
+        let pooledWindow = this.pool.find(pw => !pw.inUse && !pw.window.isDestroyed() && !pw.needsRotation);
+        
+        // If no healthy window available, try windows marked for rotation (they're still usable until rotated)
+        if (!pooledWindow) {
+            pooledWindow = this.pool.find(pw => !pw.inUse && !pw.window.isDestroyed());
+        }
 
         // If no available window, check if we can create a new one
         if (!pooledWindow) {
@@ -247,10 +262,19 @@ export class WindowPool {
             }
         }
 
-        // Check if window needs rotation
-        if (this.shouldRotateWindow(pooledWindow)) {
-            Logger.log(`[WindowPool] Window ${pooledWindow.id} needs rotation`);
-            await this.rotateWindow(pooledWindow);
+        // Mark window for rotation if needed (but don't rotate now - it's about to be used)
+        // The window will be rotated when it's released back to the pool
+        if (this.shouldRotateWindow(pooledWindow) && !pooledWindow.needsRotation) {
+            pooledWindow.needsRotation = true;
+            Logger.log(`[WindowPool] Window ${pooledWindow.id} marked for rotation (will rotate after use)`);
+        }
+
+        // Final safety check before marking as in use
+        if (pooledWindow.window.isDestroyed()) {
+            Logger.error(`[WindowPool] Window ${pooledWindow.id} was destroyed just before acquisition, retrying...`);
+            this.removeWindowFromPool(pooledWindow.id);
+            await new Promise(resolve => setTimeout(resolve, 100));
+            return this.acquireWindow(startTime);
         }
 
         pooledWindow.inUse = true;
@@ -269,14 +293,40 @@ export class WindowPool {
         if (pooledWindow.window.isDestroyed()) {
             Logger.log(`[WindowPool] Window ${pooledWindow.id} was destroyed, removing from pool`);
             this.removeWindowFromPool(pooledWindow.id);
+            // Create a replacement window to maintain pool size
+            if (this.pool.length < this.config.poolSize && !this.creatingWindow) {
+                this.creatingWindow = true;
+                try {
+                    await this.createPooledWindow();
+                } finally {
+                    this.creatingWindow = false;
+                }
+            }
             return;
         }
 
-        // Clean up the window before releasing
-        await this.cleanupWindow(pooledWindow.window);
-
+        // Mark as not in use first
         pooledWindow.inUse = false;
         pooledWindow.lastUsedAt = Date.now();
+
+        // If window is marked for rotation, rotate it now (it's idle)
+        if (pooledWindow.needsRotation) {
+            Logger.log(`[WindowPool] Window ${pooledWindow.id} is idle and marked for rotation, rotating now...`);
+            await this.rotateWindow(pooledWindow);
+            return;
+        }
+
+        // Clean up the window before releasing back to pool
+        try {
+            await this.cleanupWindow(pooledWindow.window);
+        } catch (error) {
+            Logger.error(`[WindowPool] Error cleaning up window ${pooledWindow.id}: ${error}`);
+            // If cleanup fails, the window might be in a bad state - remove it
+            if (pooledWindow.window.isDestroyed()) {
+                this.removeWindowFromPool(pooledWindow.id);
+                return;
+            }
+        }
 
         Logger.log(`[WindowPool] Released window ${pooledWindow.id}`);
     }
@@ -296,8 +346,20 @@ export class WindowPool {
             const pooledWindow = await this.acquireWindow();
 
             try {
+                // Double-check window is not destroyed before executing task
+                if (pooledWindow.window.isDestroyed()) {
+                    throw new Error(`[WindowPool] Window ${pooledWindow.id} was destroyed before task execution`);
+                }
+
                 const result = await task(pooledWindow.window);
                 return result;
+            } catch (error) {
+                // If the error is about a destroyed window, remove it from the pool
+                if (error instanceof Error && error.message.includes('Object has been destroyed')) {
+                    Logger.error(`[WindowPool] Window ${pooledWindow.id} was destroyed during task execution`);
+                    this.removeWindowFromPool(pooledWindow.id);
+                }
+                throw error;
             } finally {
                 await this.releaseWindow(pooledWindow);
             }
@@ -318,12 +380,22 @@ export class WindowPool {
 
     /**
      * Rotate a window (destroy and recreate)
+     * Only call this when the window is NOT in use
      */
     private async rotateWindow(pooledWindow: PooledWindow): Promise<void> {
+        // Safety check: never rotate a window that's in use
+        if (pooledWindow.inUse) {
+            Logger.error(`[WindowPool] Attempted to rotate window ${pooledWindow.id} while in use - skipping`);
+            return;
+        }
+
         Logger.log(`[WindowPool] Rotating window ${pooledWindow.id} (age: ${Math.floor((Date.now() - pooledWindow.createdAt) / 1000)}s, usage: ${pooledWindow.usageCount})`);
 
         const index = this.pool.indexOf(pooledWindow);
-        if (index === -1) return;
+        if (index === -1) {
+            Logger.log(`[WindowPool] Window ${pooledWindow.id} not found in pool, skipping rotation`);
+            return;
+        }
 
         // Destroy old window
         if (!pooledWindow.window.isDestroyed()) {
@@ -358,41 +430,54 @@ export class WindowPool {
      * Clean up a window after use
      */
     private async cleanupWindow(window: BrowserWindow): Promise<void> {
-        if (window.isDestroyed()) return;
+        if (window.isDestroyed()) {
+            throw new Error('Cannot cleanup destroyed window');
+        }
 
         try {
             // Clear any loaded content
-            await window.webContents.executeJavaScript(`
-                (() => {
-                    // Clear document
-                    if (document.body) {
-                        document.body.innerHTML = '';
+            if (!window.isDestroyed()) {
+                await window.webContents.executeJavaScript(`
+                    (() => {
+                        // Clear document
+                        if (document.body) {
+                            document.body.innerHTML = '';
+                        }
+                        
+                        // Clear any timers
+                        const highestTimeoutId = setTimeout(() => {}, 0);
+                        for (let i = 0; i < highestTimeoutId; i++) {
+                            clearTimeout(i);
+                        }
+                        
+                        const highestIntervalId = setInterval(() => {}, 9999);
+                        for (let i = 0; i < highestIntervalId; i++) {
+                            clearInterval(i);
+                        }
+                        
+                        // Clear console
+                        console.clear();
+                    })()
+                `).catch(err => {
+                    if (!window.isDestroyed()) {
+                        Logger.error(`[WindowPool] Error during window cleanup: ${err}`);
                     }
-                    
-                    // Clear any timers
-                    const highestTimeoutId = setTimeout(() => {}, 0);
-                    for (let i = 0; i < highestTimeoutId; i++) {
-                        clearTimeout(i);
-                    }
-                    
-                    const highestIntervalId = setInterval(() => {}, 9999);
-                    for (let i = 0; i < highestIntervalId; i++) {
-                        clearInterval(i);
-                    }
-                    
-                    // Clear console
-                    console.clear();
-                })()
-            `).catch(err => {
-                Logger.error(`[WindowPool] Error during window cleanup: ${err}`);
-            });
+                });
+            }
 
             // Load blank page to reset state
-            await window.loadURL('about:blank').catch(err => {
-                Logger.error(`[WindowPool] Error loading blank page: ${err}`);
-            });
+            if (!window.isDestroyed()) {
+                await window.loadURL('about:blank').catch(err => {
+                    if (!window.isDestroyed()) {
+                        Logger.error(`[WindowPool] Error loading blank page: ${err}`);
+                    }
+                });
+            }
         } catch (error) {
-            Logger.error(`[WindowPool] Error cleaning up window: ${error}`);
+            if (!window.isDestroyed()) {
+                Logger.error(`[WindowPool] Error cleaning up window: ${error}`);
+            }
+            throw error;
         }
     }
 
