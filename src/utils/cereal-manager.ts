@@ -67,6 +67,25 @@ export class CerealManager {
             // Ensure window is always muted and can never play sound
             win.webContents.setAudioMuted(true);
 
+            // CRITICAL: Prevent window from ever becoming visible
+            win.on('show', () => {
+                Logger.log(`[CerealManager] Window ${i} attempted to show, hiding it`);
+                win.hide();
+            });
+
+            // Additional safeguard: Monitor and force hide if window becomes visible
+            const visibilityCheck = setInterval(() => {
+                if (win && !win.isDestroyed() && win.isVisible()) {
+                    Logger.log(`[CerealManager] Window ${i} became visible, hiding it immediately`);
+                    win.hide();
+                }
+            }, 100); // Check every 100ms
+
+            // Clean up interval when window is destroyed
+            win.on('closed', () => {
+                clearInterval(visibilityCheck);
+            });
+
             // Add console message listener for debugging
             win.webContents.on('console-message', (event, level, message, line, sourceId) => {
                 Logger.log(`[CerealManager Window ${i}] ${message}`);
@@ -239,6 +258,25 @@ export class CerealManager {
 
             // Ensure window is always muted and can never play sound
             newWin.webContents.setAudioMuted(true);
+
+            // CRITICAL: Prevent window from ever becoming visible
+            newWin.on('show', () => {
+                Logger.log(`[CerealManager] Window ${windowIndex} attempted to show, hiding it`);
+                newWin.hide();
+            });
+
+            // Additional safeguard: Monitor and force hide if window becomes visible
+            const visibilityCheck = setInterval(() => {
+                if (newWin && !newWin.isDestroyed() && newWin.isVisible()) {
+                    Logger.log(`[CerealManager] Window ${windowIndex} became visible, hiding it immediately`);
+                    newWin.hide();
+                }
+            }, 100); // Check every 100ms
+
+            // Clean up interval when window is destroyed
+            newWin.on('closed', () => {
+                clearInterval(visibilityCheck);
+            });
 
             // Add console message listener
             newWin.webContents.on('console-message', (event, level, message, line, sourceId) => {

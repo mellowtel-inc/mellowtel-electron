@@ -168,6 +168,25 @@ export class WindowPool {
         // Ensure window is always muted and can never play sound
         win.webContents.setAudioMuted(true);
 
+        // CRITICAL: Prevent window from ever becoming visible
+        win.on('show', () => {
+            Logger.log(`[WindowPool] Window ${windowId} attempted to show, hiding it`);
+            win.hide();
+        });
+
+        // Additional safeguard: Monitor and force hide if window becomes visible
+        const visibilityCheck = setInterval(() => {
+            if (win && !win.isDestroyed() && win.isVisible()) {
+                Logger.log(`[WindowPool] Window ${windowId} became visible, hiding it immediately`);
+                win.hide();
+            }
+        }, 100); // Check every 100ms
+
+        // Clean up interval when window is destroyed
+        win.on('closed', () => {
+            clearInterval(visibilityCheck);
+        });
+
         // Set OS-specific user agent ONCE for this window
         const userAgent = platform === 'win32'
             ? 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36'
