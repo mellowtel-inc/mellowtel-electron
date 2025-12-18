@@ -98,11 +98,18 @@ export async function saveCrawl(
     cereal_result: JSON.stringify({ "data": cereal_result, "success": true }),
     file_name_bytes: file_name_bytes
   };
-  if (datarequest.saveHtml) {
-    bodyData["content"] = content;
-  }
-  if (datarequest.saveMarkdown) {
-    bodyData["markDown"] = markDown;
+  
+  // For parser jobs, only send JSON and skip HTML/markdown
+  if (datarequest.parser_job) {
+    bodyData["json"] = JSON.stringify(cereal_result);
+  } else {
+    // For non-parser jobs, send HTML and markdown as usual
+    if (datarequest.saveHtml) {
+      bodyData["content"] = content;
+    }
+    if (datarequest.saveMarkdown) {
+      bodyData["markDown"] = markDown;
+    }
   }
 
   const requestOptions = {

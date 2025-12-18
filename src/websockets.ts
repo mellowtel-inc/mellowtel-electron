@@ -199,7 +199,12 @@ export class WebSocketManager {
     private async processDataRequest(dataRequest: DataRequest, batch_execution = false, batch_id = ''): Promise<void> {
         let processedContent: { html: string; markdown: string; screenshot?: Buffer; contentType?: string } | undefined;
         let fileNameBytes: string = "";
-        if (dataRequest.method_endpoint) {
+        if (dataRequest.parser_job) {
+            // Simple fetch for parser jobs - use the URL directly
+            const response = await fetch(dataRequest.url);
+            const content = await response.text();
+            processedContent = { html: content, markdown: '' };
+        } else if (dataRequest.method_endpoint) {
             const fetchResult = await makeFetchRequest(dataRequest);
             if (dataRequest.saveFile) {
                 const { uploadUrl, fileName } = await getS3SignedUrls(dataRequest.recordID, fetchResult.contentType ?? 'application/octet-stream');
@@ -212,11 +217,6 @@ export class WebSocketManager {
                 const contentString = fetchResult.content.toString('utf-8');
                 processedContent = await processHtmlContent(contentString, dataRequest);
             }
-        } else if (dataRequest.parser_job) {
-            // Simple fetch for parser jobs - use the URL directly
-            const response = await fetch(dataRequest.url);
-            const content = await response.text();
-            processedContent = { html: content, markdown: '' };
         } else {
             processedContent = await processUrl(dataRequest);
         }
