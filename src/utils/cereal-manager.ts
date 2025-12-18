@@ -64,6 +64,9 @@ export class CerealManager {
                 }
             });
 
+            // Ensure window is always muted and can never play sound
+            win.webContents.setAudioMuted(true);
+
             // Add console message listener for debugging
             win.webContents.on('console-message', (event, level, message, line, sourceId) => {
                 Logger.log(`[CerealManager Window ${i}] ${message}`);
@@ -233,6 +236,9 @@ export class CerealManager {
                     offscreen: true,
                 }
             });
+
+            // Ensure window is always muted and can never play sound
+            newWin.webContents.setAudioMuted(true);
 
             // Add console message listener
             newWin.webContents.on('console-message', (event, level, message, line, sourceId) => {
