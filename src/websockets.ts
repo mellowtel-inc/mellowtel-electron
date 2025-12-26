@@ -18,10 +18,13 @@ export class WebSocketManager {
     private readonly maxReconnectAttempts: number = 5;
     private readonly reconnectDelay: number = 5000;
     private isConnecting: boolean = false;
+    private isVoluntarilyDisconnected: boolean = false;
     private pingInterval: NodeJS.Timeout | null = null;
     private pongTimeout: NodeJS.Timeout | null = null;
+    private healthCheckInterval: NodeJS.Timeout | null = null;
     private readonly pingIntervalTime: number = 60000; // 60 seconds
     private readonly pongTimeoutTime: number = 5000; // receive pong back in < 5 seconds
+    private readonly healthCheckIntervalTime: number = 15 * 60 * 1000; // 15 minutes
 
     private constructor() {
         this.identifier = '';
@@ -88,7 +91,9 @@ export class WebSocketManager {
         this.ws.onopen = () => {
             Logger.log("[WebSocketManager]: Connection established!!!");
             this.reconnectAttempts = 0;
+            this.isVoluntarilyDisconnected = false;
             this.startPing();
+            this.startHealthCheck();
         };
 
         this.ws.onclose = () => {
@@ -127,6 +132,43 @@ export class WebSocketManager {
             this.pingInterval = null;
         }
         this.clearPongTimeout();
+    }
+
+    private startHealthCheck(): void {
+        this.stopHealthCheck();
+        Logger.log("[WebSocketManager]: Starting health check interval (every 15 minutes)");
+        this.healthCheckInterval = setInterval(() => {
+            this.performHealthCheck();
+        }, this.healthCheckIntervalTime);
+    }
+
+    private stopHealthCheck(): void {
+        if (this.healthCheckInterval) {
+            clearInterval(this.healthCheckInterval);
+            this.healthCheckInterval = null;
+        }
+    }
+
+    private performHealthCheck(): void {
+        Logger.log("[WebSocketManager]: Performing health check...");
+        
+        // Don't reconnect if voluntarily disconnected (user opted out)
+        if (this.isVoluntarilyDisconnected) {
+            Logger.log("[WebSocketManager]: Health check skipped - voluntarily disconnected");
+            return;
+        }
+
+        // Check if WebSocket is connected and open
+        const isConnected = this.ws !== null && this.ws.readyState === WebSocket.OPEN;
+        
+        if (!isConnected) {
+            Logger.log("[WebSocketManager]: Health check detected disconnected state, attempting to reconnect...");
+            // Reset reconnect attempts to allow fresh reconnection
+            this.reconnectAttempts = 0;
+            this.initialize(this.identifier);
+        } else {
+            Logger.log("[WebSocketManager]: Health check passed - WebSocket is connected");
+        }
     }
 
     private startPongTimeout(): void {
@@ -291,11 +333,14 @@ export class WebSocketManager {
 
     /// Voluntarily disconnect websocket
     public disconnect(): void {
+        Logger.log("[WebSocketManager]: Voluntarily disconnecting...");
+        this.isVoluntarilyDisconnected = true;
+        this.reconnectAttempts = -1;
+        this.stopPing();
+        this.stopHealthCheck();
         if (this.ws) {
-            this.reconnectAttempts = -1;
             this.ws.close();
             this.ws = null;
-            this.stopPing();
         }
     }
 }
