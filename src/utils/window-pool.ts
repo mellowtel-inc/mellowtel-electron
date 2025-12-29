@@ -126,6 +126,17 @@ export class WindowPool {
             event.preventDefault();
         });
 
+        // CRITICAL: Deny all permission requests silently (no dialogs)
+        uniqueSession.setPermissionRequestHandler((webContents, permission, callback) => {
+            Logger.log(`[WindowPool] Permission request denied: ${permission}`);
+            callback(false); // Deny all permissions
+        });
+
+        // Block certificate errors silently (no dialogs)
+        uniqueSession.setCertificateVerifyProc((request, callback) => {
+            callback(0); // Accept all certificates to avoid dialogs
+        });
+
         // Set up stealth headers ONCE for this window's session
         // This prevents accumulating listeners on every request
         const platform = os.platform();
@@ -161,7 +172,43 @@ export class WindowPool {
                 session: uniqueSession,
                 webSecurity: true,
                 allowRunningInsecureContent: false,
-                experimentalFeatures: false
+                experimentalFeatures: false,
+                enablePreferredSizeMode: false
+            }
+        });
+
+        // CRITICAL: Block all popup windows (no dialogs)
+        win.webContents.setWindowOpenHandler(() => {
+            Logger.log(`[WindowPool] Popup blocked in ${windowId}`);
+            return { action: 'deny' };
+        });
+
+        // CRITICAL: Prevent beforeunload dialogs
+        win.webContents.on('will-prevent-unload', (event) => {
+            Logger.log(`[WindowPool] Prevented beforeunload dialog in ${windowId}`);
+            event.preventDefault();
+        });
+
+        // CRITICAL: Block HTTP authentication dialogs
+        win.webContents.on('login', (event, details, authInfo, callback) => {
+            Logger.log(`[WindowPool] HTTP auth blocked in ${windowId}`);
+            event.preventDefault();
+            callback('', ''); // Provide empty credentials
+        });
+
+        // CRITICAL: Override JavaScript dialogs (alert, confirm, prompt)
+        // Inject immediately after any page loads
+        win.webContents.on('did-start-loading', () => {
+            if (!win.isDestroyed()) {
+                win.webContents.executeJavaScript(`
+                    (function() {
+                        window.alert = function() { return undefined; };
+                        window.confirm = function() { return false; };
+                        window.prompt = function() { return null; };
+                    })();
+                `).catch(() => {
+                    // Silently ignore errors during injection
+                });
             }
         });
 
@@ -366,6 +413,30 @@ export class WindowPool {
 
         return this.limit(async () => {
             const pooledWindow = await this.acquireWindow();
+            const startTime = Date.now();
+
+            // Watchdog timer to detect stuck windows (>60 seconds)
+            const watchdogTimer = setInterval(() => {
+                const elapsedTime = Date.now() - startTime;
+                if (elapsedTime > 60000 && pooledWindow.inUse) {
+                    Logger.error(`[WindowPool] Window ${pooledWindow.id} stuck for ${Math.floor(elapsedTime / 1000)}s, destroying it`);
+                    clearInterval(watchdogTimer);
+                    
+                    // Destroy the stuck window
+                    if (!pooledWindow.window.isDestroyed()) {
+                        pooledWindow.window.destroy();
+                    }
+                    this.removeWindowFromPool(pooledWindow.id);
+                    
+                    // Create replacement window to maintain pool size
+                    if (this.pool.length < this.config.poolSize && !this.creatingWindow) {
+                        this.creatingWindow = true;
+                        this.createPooledWindow().finally(() => {
+                            this.creatingWindow = false;
+                        });
+                    }
+                }
+            }, 5000); // Check every 5 seconds
 
             try {
                 // Double-check window is not destroyed before executing task
@@ -374,15 +445,31 @@ export class WindowPool {
                 }
 
                 const result = await task(pooledWindow.window);
+                clearInterval(watchdogTimer);
                 return result;
             } catch (error) {
-                // If the error is about a destroyed window, remove it from the pool
-                if (error instanceof Error && error.message.includes('Object has been destroyed')) {
-                    Logger.error(`[WindowPool] Window ${pooledWindow.id} was destroyed during task execution`);
-                    this.removeWindowFromPool(pooledWindow.id);
+                clearInterval(watchdogTimer);
+                
+                // On ANY error, destroy the window and replace it
+                Logger.error(`[WindowPool] Error in window ${pooledWindow.id}, destroying and replacing: ${error}`);
+                
+                // Destroy the problematic window
+                if (!pooledWindow.window.isDestroyed()) {
+                    pooledWindow.window.destroy();
                 }
+                this.removeWindowFromPool(pooledWindow.id);
+                
+                // Create replacement window to maintain pool size
+                if (this.pool.length < this.config.poolSize && !this.creatingWindow) {
+                    this.creatingWindow = true;
+                    this.createPooledWindow().finally(() => {
+                        this.creatingWindow = false;
+                    });
+                }
+                
                 throw error;
             } finally {
+                clearInterval(watchdogTimer);
                 await this.releaseWindow(pooledWindow);
             }
         });

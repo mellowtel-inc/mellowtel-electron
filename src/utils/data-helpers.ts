@@ -147,15 +147,25 @@ export async function processHtmlContent(htmlString: string, dataRequest: DataRe
     const windowPool = getWindowPool();
     
     return windowPool.executeWithWindow(async (win: BrowserWindow) => {
-        // Resize window if needed
-        if (dataRequest.windowSize.width || dataRequest.windowSize.height) {
-            win.setSize(
-                dataRequest.windowSize.width || 1709,
-                dataRequest.windowSize.height || 984
-            );
-        }
+        // Create a 60-second timeout promise
+        const timeoutPromise = new Promise<never>((_, reject) => {
+            setTimeout(() => {
+                reject(new Error(`[processHtmlContent] Timeout: HTML processing exceeded 60 seconds`));
+            }, 60000);
+        });
 
-        try {
+        // Race between the actual processing and the timeout
+        return Promise.race([
+            (async () => {
+                // Resize window if needed
+                if (dataRequest.windowSize.width || dataRequest.windowSize.height) {
+                    win.setSize(
+                        dataRequest.windowSize.width || 1709,
+                        dataRequest.windowSize.height || 984
+                    );
+                }
+
+                try {
             // Load the HTML content directly and wait for it to load
             await new Promise<void>((resolve, reject) => {
                 win.webContents.on('dom-ready', () => {
@@ -245,22 +255,25 @@ export async function processHtmlContent(htmlString: string, dataRequest: DataRe
             let markdown = turndownService.turndown(content);
             Logger.log(`[processHtmlContent]: Converted HTML to Markdown`);
 
-            return {
-                html: content,
-                markdown: markdown,
-                screenshot: screenshot,
-                contentType: screenshot ? 'image/png' : undefined
-            };
-        } catch (error) {
-            Logger.error(`[processHtmlContent]: Error processing HTML content - ${error}`);
-            // Return original content on error
-            return {
-                html: htmlString,
-                markdown: htmlString,
-                screenshot: undefined,
-                contentType: undefined
-            };
-        }
+                    return {
+                        html: content,
+                        markdown: markdown,
+                        screenshot: screenshot,
+                        contentType: screenshot ? 'image/png' : undefined
+                    };
+                } catch (error) {
+                    Logger.error(`[processHtmlContent]: Error processing HTML content - ${error}`);
+                    // Return original content on error
+                    return {
+                        html: htmlString,
+                        markdown: htmlString,
+                        screenshot: undefined,
+                        contentType: undefined
+                    };
+                }
+            })(),
+            timeoutPromise
+        ]);
     });
 }
 
@@ -268,18 +281,28 @@ export async function processUrl(dataRequest: DataRequest): Promise<{ html: stri
     const windowPool = getWindowPool();
     
     return windowPool.executeWithWindow(async (win: BrowserWindow) => {
-        // Resize window if needed
-        if (dataRequest.windowSize.width || dataRequest.windowSize.height) {
-            win.setSize(
-                dataRequest.windowSize.width || 1709,
-                dataRequest.windowSize.height || 984
-            );
-        }
+        // Create a 60-second timeout promise
+        const timeoutPromise = new Promise<never>((_, reject) => {
+            setTimeout(() => {
+                reject(new Error(`[processUrl] Timeout: URL processing exceeded 60 seconds for ${dataRequest.url}`));
+            }, 60000);
+        });
 
-        // Note: User agent and session headers are already configured in the window pool
-        // This prevents accumulating event listeners on every request
+        // Race between the actual processing and the timeout
+        return Promise.race([
+            (async () => {
+                // Resize window if needed
+                if (dataRequest.windowSize.width || dataRequest.windowSize.height) {
+                    win.setSize(
+                        dataRequest.windowSize.width || 1709,
+                        dataRequest.windowSize.height || 984
+                    );
+                }
 
-        try {
+                // Note: User agent and session headers are already configured in the window pool
+                // This prevents accumulating event listeners on every request
+
+                try {
             // Add stealth features to avoid bot detection
             const stealthScript = `
                 // Override webdriver property
@@ -445,16 +468,19 @@ export async function processUrl(dataRequest: DataRequest): Promise<{ html: stri
             let markdown = turndownService.turndown(content);
             Logger.log(`[processUrl]: Converted HTML to Markdown for ${dataRequest.url}`);
 
-            return {
-                html: content,
-                markdown: markdown,
-                screenshot: screenshot,
-                contentType: screenshot ? 'image/png' : undefined
-            };
-        } catch (error) {
-            Logger.error(`[processUrl]: Error processing ${dataRequest.url} - ${error}`);
-            throw error;
-        }
+                    return {
+                        html: content,
+                        markdown: markdown,
+                        screenshot: screenshot,
+                        contentType: screenshot ? 'image/png' : undefined
+                    };
+                } catch (error) {
+                    Logger.error(`[processUrl]: Error processing ${dataRequest.url} - ${error}`);
+                    throw error;
+                }
+            })(),
+            timeoutPromise
+        ]);
     });
 }
 
