@@ -1,4 +1,4 @@
-import { BrowserWindow, session } from 'electron';
+import { BrowserWindow, session, app } from 'electron';
 import { Logger } from '../logger/logger';
 import * as os from 'os';
 
@@ -95,6 +95,9 @@ export class WindowPool {
 
         Logger.log(`[WindowPool] Initializing pool with ${this.config.poolSize} windows, max concurrency: ${this.config.maxConcurrency}`);
 
+        // Set up app-level crash handlers to prevent dialogs
+        this.setupCrashHandlers();
+
         // Dynamically import p-limit (ES Module)
         // Use Function constructor to prevent TypeScript from transforming the import
         const pLimit = (await (new Function('specifier', 'return import(specifier)')('p-limit') as Promise<any>)).default;
@@ -109,6 +112,30 @@ export class WindowPool {
         this.startPeriodicCleanup();
 
         Logger.log(`[WindowPool] Initialized successfully. Pool size: ${this.pool.length}`);
+    }
+
+    /**
+     * Set up app-level crash handlers to prevent system dialogs
+     */
+    private setupCrashHandlers(): void {
+        // Handle child process crashes silently
+        app.on('child-process-gone', (_event, details) => {
+            Logger.log(`[WindowPool] Child process gone: ${details.type} - ${details.reason}`);
+            // Don't show any dialog, just log
+        });
+
+        // Handle render process crashes at app level (backup for per-window handler)
+        app.on('render-process-gone', (_event, _webContents, details) => {
+            Logger.log(`[WindowPool] Render process gone (app-level): ${details.reason}`);
+            // Window pool will handle cleanup via per-window handler
+        });
+
+        // Handle GPU info updates silently
+        app.on('gpu-info-update', () => {
+            // GPU info updated, no action needed
+        });
+
+        Logger.log('[WindowPool] Crash handlers initialized');
     }
 
     /**
@@ -127,9 +154,21 @@ export class WindowPool {
         });
 
         // CRITICAL: Deny all permission requests silently (no dialogs)
-        uniqueSession.setPermissionRequestHandler((webContents, permission, callback) => {
+        uniqueSession.setPermissionRequestHandler((_webContents, permission, callback) => {
             Logger.log(`[WindowPool] Permission request denied: ${permission}`);
             callback(false); // Deny all permissions
+        });
+
+        // Deny permission checks too (synchronous check)
+        uniqueSession.setPermissionCheckHandler((_webContents, permission, _requestingOrigin) => {
+            Logger.log(`[WindowPool] Permission check denied: ${permission}`);
+            return false; // Deny all
+        });
+
+        // Block device access requests
+        uniqueSession.setDevicePermissionHandler((details) => {
+            Logger.log(`[WindowPool] Device access denied: ${details.deviceType}`);
+            return false;
         });
 
         // Block certificate errors silently (no dialogs)
@@ -165,6 +204,7 @@ export class WindowPool {
             show: false,
             width: 1709,
             height: 984,
+            focusable: false,           // Prevent focus stealing
             webPreferences: {
                 offscreen: true,
                 nodeIntegration: false,
@@ -173,14 +213,9 @@ export class WindowPool {
                 webSecurity: true,
                 allowRunningInsecureContent: false,
                 experimentalFeatures: false,
-                enablePreferredSizeMode: false
+                enablePreferredSizeMode: false,
+                spellcheck: false,      // Disable spellcheck popups
             }
-        });
-
-        // CRITICAL: Block all popup windows (no dialogs)
-        win.webContents.setWindowOpenHandler(() => {
-            Logger.log(`[WindowPool] Popup blocked in ${windowId}`);
-            return { action: 'deny' };
         });
 
         // CRITICAL: Prevent beforeunload dialogs
@@ -190,21 +225,190 @@ export class WindowPool {
         });
 
         // CRITICAL: Block HTTP authentication dialogs
-        win.webContents.on('login', (event, details, authInfo, callback) => {
+        win.webContents.on('login', (event, _details, _authInfo, callback) => {
             Logger.log(`[WindowPool] HTTP auth blocked in ${windowId}`);
             event.preventDefault();
             callback('', ''); // Provide empty credentials
         });
 
-        // CRITICAL: Override JavaScript dialogs (alert, confirm, prompt)
+        // BLOCK: Print dialog
+        (win.webContents as any).on('will-print', (event: any) => {
+            Logger.log(`[WindowPool] Print blocked in ${windowId}`);
+            event.preventDefault();
+        });
+
+        // BLOCK: Client certificate selection dialog
+        win.webContents.on('select-client-certificate', (event, _url, _list, callback) => {
+            Logger.log(`[WindowPool] Client cert selection blocked in ${windowId}`);
+            event.preventDefault();
+            callback(undefined as any);
+        });
+
+        // BLOCK: Bluetooth device selection
+        win.webContents.on('select-bluetooth-device', (event, _devices, callback) => {
+            Logger.log(`[WindowPool] Bluetooth selection blocked in ${windowId}`);
+            event.preventDefault();
+            callback('');
+        });
+
+        // BLOCK: Serial port selection
+        (win.webContents as any).on('select-serial-port', (event: any, _ports: any, _webContents: any, callback: any) => {
+            Logger.log(`[WindowPool] Serial port selection blocked in ${windowId}`);
+            event.preventDefault();
+            callback('');
+        });
+
+        // BLOCK: HID device selection
+        (win.webContents as any).on('select-hid-device', (event: any, _details: any, callback: any) => {
+            Logger.log(`[WindowPool] HID device selection blocked in ${windowId}`);
+            event.preventDefault();
+            callback(undefined);
+        });
+
+        // BLOCK: USB device selection
+        (win.webContents as any).on('select-usb-device', (event: any, _details: any, callback: any) => {
+            Logger.log(`[WindowPool] USB device selection blocked in ${windowId}`);
+            event.preventDefault();
+            callback(undefined);
+        });
+
+        // BLOCK: External protocol navigations that could open system apps
+        const BLOCKED_PROTOCOLS = [
+            'mailto:', 'tel:', 'sms:', 'callto:',
+            'ms-windows-store:', 'ms-settings:',
+            'slack:', 'spotify:', 'steam:', 'discord:',
+            'zoommtg:', 'msteams:', 'skype:',
+            'file:', 'ftp:', 'sftp:',
+        ];
+
+        win.webContents.on('will-navigate', (event, url) => {
+            const urlLower = url.toLowerCase();
+            for (const protocol of BLOCKED_PROTOCOLS) {
+                if (urlLower.startsWith(protocol)) {
+                    Logger.log(`[WindowPool] Blocked navigation to ${protocol} in ${windowId}`);
+                    event.preventDefault();
+                    return;
+                }
+            }
+        });
+
+        // Also block external protocols in new-window attempts
+        win.webContents.setWindowOpenHandler(({ url }) => {
+            const urlLower = url.toLowerCase();
+            for (const protocol of BLOCKED_PROTOCOLS) {
+                if (urlLower.startsWith(protocol)) {
+                    Logger.log(`[WindowPool] Blocked popup to ${protocol} in ${windowId}`);
+                    return { action: 'deny' };
+                }
+            }
+            Logger.log(`[WindowPool] Popup blocked in ${windowId}`);
+            return { action: 'deny' }; // Block all popups anyway
+        });
+
+        // CRITICAL: Override JavaScript dialogs and UI-triggering APIs
         // Inject immediately after any page loads
         win.webContents.on('did-start-loading', () => {
             if (!win.isDestroyed()) {
                 win.webContents.executeJavaScript(`
                     (function() {
+                        'use strict';
+
+                        // === DIALOG BLOCKING ===
                         window.alert = function() { return undefined; };
                         window.confirm = function() { return false; };
                         window.prompt = function() { return null; };
+                        window.print = function() { return undefined; };
+
+                        // === NOTIFICATION API BLOCKING ===
+                        window.Notification = function() {
+                            throw new Error('Notifications not supported');
+                        };
+                        window.Notification.permission = 'denied';
+                        window.Notification.requestPermission = function() {
+                            return Promise.resolve('denied');
+                        };
+
+                        // === FILE INPUT BLOCKING ===
+                        const originalClick = HTMLInputElement.prototype.click;
+                        HTMLInputElement.prototype.click = function() {
+                            if (this.type === 'file') {
+                                return;
+                            }
+                            return originalClick.call(this);
+                        };
+
+                        // Block File System Access API
+                        window.showOpenFilePicker = undefined;
+                        window.showSaveFilePicker = undefined;
+                        window.showDirectoryPicker = undefined;
+
+                        // === KEYBOARD SHORTCUT BLOCKING ===
+                        document.addEventListener('keydown', function(e) {
+                            if (e.ctrlKey || e.metaKey) {
+                                if (['p', 's', 'f', 'o', 'n'].includes(e.key.toLowerCase())) {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    return false;
+                                }
+                            }
+                        }, true);
+
+                        // === RECAPTCHA ERROR DIALOG HIDING ===
+                        const style = document.createElement('style');
+                        style.textContent = \`
+                            .rc-anchor-error-msg-container,
+                            .rc-anchor-error-message,
+                            .rc-doscaptcha-body,
+                            [class*="recaptcha-error"],
+                            [class*="captcha-error"] {
+                                display: none !important;
+                                visibility: hidden !important;
+                            }
+                        \`;
+                        if (document.documentElement) {
+                            document.documentElement.appendChild(style);
+                        }
+
+                        // === PAYMENT REQUEST BLOCKING ===
+                        window.PaymentRequest = undefined;
+
+                        // === CREDENTIAL MANAGEMENT BLOCKING ===
+                        if (navigator.credentials) {
+                            navigator.credentials.get = function() {
+                                return Promise.reject(new Error('Credentials API disabled'));
+                            };
+                            navigator.credentials.store = function() {
+                                return Promise.reject(new Error('Credentials API disabled'));
+                            };
+                            navigator.credentials.create = function() {
+                                return Promise.reject(new Error('Credentials API disabled'));
+                            };
+                        }
+
+                        // === WEB SHARE BLOCKING ===
+                        navigator.share = undefined;
+                        navigator.canShare = function() { return false; };
+
+                        // === FULLSCREEN BLOCKING ===
+                        Element.prototype.requestFullscreen = function() {
+                            return Promise.reject(new Error('Fullscreen disabled'));
+                        };
+                        if (Element.prototype.webkitRequestFullscreen) {
+                            Element.prototype.webkitRequestFullscreen = function() {};
+                        }
+
+                        // === DIMENSION FIXES FOR OFFSCREEN ===
+                        if (window.outerWidth === 0) {
+                            Object.defineProperty(window, 'outerWidth', {
+                                get: () => window.innerWidth
+                            });
+                        }
+                        if (window.outerHeight === 0) {
+                            Object.defineProperty(window, 'outerHeight', {
+                                get: () => window.innerHeight + 85
+                            });
+                        }
+
                     })();
                 `).catch(() => {
                     // Silently ignore errors during injection

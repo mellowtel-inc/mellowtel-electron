@@ -1,6 +1,9 @@
 import { app, BrowserWindow } from 'electron';
-import Mellowtel from '../dist/index';
+import Mellowtel, { setupMellowtelApp } from '../dist/index';
 import { cerealMain } from '../src/utils/data-helpers';
+
+// Call BEFORE app.ready to configure command-line flags
+setupMellowtelApp();
 
 function createWindow(): BrowserWindow {
   // Create the browser window

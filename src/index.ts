@@ -2,17 +2,20 @@ import { getOrGenerateIdentifier } from "./utils/identity-helpers";
 import { Logger } from "./logger/logger";
 import { WebSocketManager } from "./websockets";
 import { getLocalStorage, setLocalStorage } from "./storage/storage-helpers";
-import { 
-  getTotalRequestCount, 
-  getDailyRequestCount, 
-  getRequestCounts, 
-  getRequestCountForDate, 
-  getDailyRequestsHistory, 
-  getRequestCountsInRange 
+import {
+  getTotalRequestCount,
+  getDailyRequestCount,
+  getRequestCounts,
+  getRequestCountForDate,
+  getDailyRequestsHistory,
+  getRequestCountsInRange
 } from "./storage/request-counter";
 import { BrowserWindow } from 'electron'
 import { showConsentSettings } from "./consent/consent-setttings";
 import { showConsentDialog } from "./consent/consent-dialog";
+
+// Export app setup utility for command-line flags
+export { setupMellowtelApp } from "./utils/app-setup";
 
 const OPT_IN_STATUS_KEY = "mellowtel_opt_in_status";
 
