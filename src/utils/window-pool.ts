@@ -204,6 +204,8 @@ export class WindowPool {
             show: false,
             width: 1709,
             height: 984,
+            x: -10000,                  // Position off-screen as failsafe
+            y: -10000,
             focusable: false,           // Prevent focus stealing
             webPreferences: {
                 offscreen: true,
@@ -422,6 +424,14 @@ export class WindowPool {
         // CRITICAL: Prevent window from ever becoming visible
         win.on('show', () => {
             Logger.log(`[WindowPool] Window ${windowId} attempted to show, hiding it`);
+            win.setPosition(-10000, -10000); // Move off-screen immediately
+            win.hide();
+        });
+
+        // Block focus attempts that could make window visible
+        win.on('focus', () => {
+            Logger.log(`[WindowPool] Window ${windowId} attempted to focus, hiding it`);
+            win.blur();
             win.hide();
         });
 
