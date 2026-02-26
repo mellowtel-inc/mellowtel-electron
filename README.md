@@ -71,13 +71,15 @@ First, import `Mellowtel` and initialize it in your main process file:
 
 ```typescript
 import { app, BrowserWindow } from 'electron';
-import Mellowtel from '@mellowtel-inc/mellowtel-electron';
+import Mellowtel, { setupMellowtelApp } from '@mellowtel-inc/mellowtel-electron';
 
+// Optional: Call BEFORE app.ready to prevent system dialogs
+setupMellowtelApp();
 
 // When the app is ready, create the window
 app.whenReady().then(async () => {
   let win = createWindow();
-  
+
   const mellowtel: Mellowtel = new Mellowtel('IDENTIFIER', {
     disableLogs: false
   });
@@ -88,6 +90,32 @@ app.whenReady().then(async () => {
 ```
 
 Make sure to replace `IDENTIFIER` with the one you get from the Mellowtel dashboard.
+
+### setupMellowtelApp() (Optional)
+
+The `setupMellowtelApp()` function configures Electron command-line flags to prevent system dialogs from interrupting your users. This is optional but recommended for the best user experience.
+
+**Important:** This function must be called **before** `app.whenReady()` to take effect.
+
+```typescript
+import Mellowtel, { setupMellowtelApp } from '@mellowtel-inc/mellowtel-electron';
+
+// Call at the top of your main process file, before app.ready
+setupMellowtelApp();
+
+app.whenReady().then(async () => {
+  // Your app initialization
+});
+```
+
+**What it does:**
+- Disables autofill popups and translation bars
+- Prevents Windows Security authentication dialogs (NTLM/Kerberos)
+- Disables password manager integration prompts
+- Prevents media control overlays
+- Suppresses first-run dialogs
+
+This ensures Mellowtel's background operations never interrupt your users' workflow with unexpected system dialogs.
 
 For more detailed documentation, visit [docs.mellowtel.com/electron/quickstart](https://docs.mellowtel.com/electron/quickstart).
 
