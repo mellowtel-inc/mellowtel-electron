@@ -1,6 +1,11 @@
 /**
  * Pool window preload. Runs before any page script in each frame (main + iframes).
  * Blocks JS dialogs and other UI APIs that can leak native OS prompts on Windows.
+ *
+ * REFERENCE ONLY. This file is the type-checked, readable version of the
+ * preload. It is NOT loaded at runtime. The runtime version is the string
+ * constant in src/utils/dialog-block-source.ts. If you edit this file,
+ * mirror the change there.
  */
 (function () {
     'use strict';

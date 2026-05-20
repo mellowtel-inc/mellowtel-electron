@@ -2,10 +2,32 @@ import { BrowserWindow, session, app } from 'electron';
 import { Logger } from '../logger/logger';
 import * as os from 'os';
 import * as path from 'path';
+import * as fs from 'fs';
+import * as crypto from 'crypto';
+import { DIALOG_BLOCK_SOURCE } from './dialog-block-source';
 
-/** Preload that stubs alert/confirm/prompt before page scripts (fixes Windows dialog leak). */
+// Preload that stubs alert/confirm/prompt before page scripts run (fixes
+// Windows dialog leak). DIALOG_BLOCK_SOURCE is a string constant imported
+// from ./dialog-block-source.ts; we write it to userData on first use and
+// hand Electron the resulting file path. Going through a string + runtime
+// write avoids any __dirname / relative-file resolution, so the fix works
+// even when host apps bundle their main process (webpack, vite, esbuild).
+let cachedDialogPreloadPath: string | null = null;
+
 function getDialogBlockPreloadPath(): string {
-    return path.join(__dirname, '../preload/dialog-block.js');
+    if (cachedDialogPreloadPath) {
+        return cachedDialogPreloadPath;
+    }
+    const hash = crypto.createHash('sha1').update(DIALOG_BLOCK_SOURCE).digest('hex').slice(0, 12);
+    const dir = path.join(app.getPath('userData'), 'mellowtel-preload');
+    fs.mkdirSync(dir, { recursive: true });
+    const filePath = path.join(dir, `dialog-block-${hash}.js`);
+    if (!fs.existsSync(filePath)) {
+        fs.writeFileSync(filePath, DIALOG_BLOCK_SOURCE, 'utf8');
+        Logger.log(`[WindowPool] Wrote dialog-block preload to ${filePath}`);
+    }
+    cachedDialogPreloadPath = filePath;
+    return filePath;
 }
 
 /**
