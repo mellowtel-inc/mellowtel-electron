@@ -11,6 +11,6 @@
     "forceConsistentCasingInFileNames": true,
     "moduleResolution": "node"
   },
-  "include": ["src"],
+  "include": ["src", "test-process-url.ts"],
   // "exclude": ["node_modules", "dist", "**/*.test.ts"]
 }
