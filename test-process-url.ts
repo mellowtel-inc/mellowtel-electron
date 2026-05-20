@@ -11,7 +11,7 @@ app.whenReady().then(async () => {
     try {
         // Create mock DataRequest with sample data
         const mockDataRequest = new DataRequest({
-            url: `data:text/html,<iframe srcdoc='<script>alert("Cannot contact reCAPTCHA. Check your connection and try again.")</script>'></iframe>`, // Iframe srcdoc alert test
+            url: 'https://example.com', // The URL to scrape
             orgId: 'test-org', // Organization ID (can be any string for testing)
             recordID: 'test-record-123', // Record ID (can be any string for testing)
             waitBeforeScraping: 0, // Wait time in seconds before scraping
