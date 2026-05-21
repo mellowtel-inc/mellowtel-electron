@@ -1,6 +1,6 @@
 {
   "name": "@mellowtel-inc/mellowtel-electron",
-  "version": "700.0.26",
+  "version": "700.0.27",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "repository": {
