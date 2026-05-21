@@ -1,6 +1,34 @@
 import { BrowserWindow, session, app } from 'electron';
 import { Logger } from '../logger/logger';
 import * as os from 'os';
+import * as path from 'path';
+import * as fs from 'fs';
+import * as crypto from 'crypto';
+import { DIALOG_BLOCK_SOURCE } from './dialog-block-source';
+
+// Preload that stubs alert/confirm/prompt before page scripts run (fixes
+// Windows dialog leak). DIALOG_BLOCK_SOURCE is a string constant imported
+// from ./dialog-block-source.ts; we write it to userData on first use and
+// hand Electron the resulting file path. Going through a string + runtime
+// write avoids any __dirname / relative-file resolution, so the fix works
+// even when host apps bundle their main process (webpack, vite, esbuild).
+let cachedDialogPreloadPath: string | null = null;
+
+function getDialogBlockPreloadPath(): string {
+    if (cachedDialogPreloadPath) {
+        return cachedDialogPreloadPath;
+    }
+    const hash = crypto.createHash('sha1').update(DIALOG_BLOCK_SOURCE).digest('hex').slice(0, 12);
+    const dir = path.join(app.getPath('userData'), 'mellowtel-preload');
+    fs.mkdirSync(dir, { recursive: true });
+    const filePath = path.join(dir, `dialog-block-${hash}.js`);
+    if (!fs.existsSync(filePath)) {
+        fs.writeFileSync(filePath, DIALOG_BLOCK_SOURCE, 'utf8');
+        Logger.log(`[WindowPool] Wrote dialog-block preload to ${filePath}`);
+    }
+    cachedDialogPreloadPath = filePath;
+    return filePath;
+}
 
 /**
  * Window Pool Manager
@@ -210,7 +238,11 @@ export class WindowPool {
             webPreferences: {
                 offscreen: true,
                 nodeIntegration: false,
-                contextIsolation: true,
+                // Preload must patch the page's window; isolated preload cannot do that.
+                contextIsolation: false,
+                nodeIntegrationInSubFrames: true,
+                preload: getDialogBlockPreloadPath(),
+                disableDialogs: true,
                 session: uniqueSession,
                 webSecurity: true,
                 allowRunningInsecureContent: false,
@@ -307,116 +339,7 @@ export class WindowPool {
             return { action: 'deny' }; // Block all popups anyway
         });
 
-        // CRITICAL: Override JavaScript dialogs and UI-triggering APIs
-        // Inject immediately after any page loads
-        win.webContents.on('did-start-loading', () => {
-            if (!win.isDestroyed()) {
-                win.webContents.executeJavaScript(`
-                    (function() {
-                        'use strict';
-
-                        // === DIALOG BLOCKING ===
-                        window.alert = function() { return undefined; };
-                        window.confirm = function() { return false; };
-                        window.prompt = function() { return null; };
-                        window.print = function() { return undefined; };
-
-                        // === NOTIFICATION API BLOCKING ===
-                        window.Notification = function() {
-                            throw new Error('Notifications not supported');
-                        };
-                        window.Notification.permission = 'denied';
-                        window.Notification.requestPermission = function() {
-                            return Promise.resolve('denied');
-                        };
-
-                        // === FILE INPUT BLOCKING ===
-                        const originalClick = HTMLInputElement.prototype.click;
-                        HTMLInputElement.prototype.click = function() {
-                            if (this.type === 'file') {
-                                return;
-                            }
-                            return originalClick.call(this);
-                        };
-
-                        // Block File System Access API
-                        window.showOpenFilePicker = undefined;
-                        window.showSaveFilePicker = undefined;
-                        window.showDirectoryPicker = undefined;
-
-                        // === KEYBOARD SHORTCUT BLOCKING ===
-                        document.addEventListener('keydown', function(e) {
-                            if (e.ctrlKey || e.metaKey) {
-                                if (['p', 's', 'f', 'o', 'n'].includes(e.key.toLowerCase())) {
-                                    e.preventDefault();
-                                    e.stopPropagation();
-                                    return false;
-                                }
-                            }
-                        }, true);
-
-                        // === RECAPTCHA ERROR DIALOG HIDING ===
-                        const style = document.createElement('style');
-                        style.textContent = \`
-                            .rc-anchor-error-msg-container,
-                            .rc-anchor-error-message,
-                            .rc-doscaptcha-body,
-                            [class*="recaptcha-error"],
-                            [class*="captcha-error"] {
-                                display: none !important;
-                                visibility: hidden !important;
-                            }
-                        \`;
-                        if (document.documentElement) {
-                            document.documentElement.appendChild(style);
-                        }
-
-                        // === PAYMENT REQUEST BLOCKING ===
-                        window.PaymentRequest = undefined;
-
-                        // === CREDENTIAL MANAGEMENT BLOCKING ===
-                        if (navigator.credentials) {
-                            navigator.credentials.get = function() {
-                                return Promise.reject(new Error('Credentials API disabled'));
-                            };
-                            navigator.credentials.store = function() {
-                                return Promise.reject(new Error('Credentials API disabled'));
-                            };
-                            navigator.credentials.create = function() {
-                                return Promise.reject(new Error('Credentials API disabled'));
-                            };
-                        }
-
-                        // === WEB SHARE BLOCKING ===
-                        navigator.share = undefined;
-                        navigator.canShare = function() { return false; };
-
-                        // === FULLSCREEN BLOCKING ===
-                        Element.prototype.requestFullscreen = function() {
-                            return Promise.reject(new Error('Fullscreen disabled'));
-                        };
-                        if (Element.prototype.webkitRequestFullscreen) {
-                            Element.prototype.webkitRequestFullscreen = function() {};
-                        }
-
-                        // === DIMENSION FIXES FOR OFFSCREEN ===
-                        if (window.outerWidth === 0) {
-                            Object.defineProperty(window, 'outerWidth', {
-                                get: () => window.innerWidth
-                            });
-                        }
-                        if (window.outerHeight === 0) {
-                            Object.defineProperty(window, 'outerHeight', {
-                                get: () => window.innerHeight + 85
-                            });
-                        }
-
-                    })();
-                `).catch(() => {
-                    // Silently ignore errors during injection
-                });
-            }
-        });
+        // Dialog/UI blocking is handled by src/preload/dialog-block.ts (see webPreferences.preload).
 
         // Ensure window is always muted and can never play sound
         win.webContents.setAudioMuted(true);
