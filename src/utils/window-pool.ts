@@ -4,6 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
+import pLimit from 'p-limit';
 import { DIALOG_BLOCK_SOURCE } from './dialog-block-source';
 
 // Preload that stubs alert/confirm/prompt before page scripts run (fixes
@@ -126,9 +127,9 @@ export class WindowPool {
         // Set up app-level crash handlers to prevent dialogs
         this.setupCrashHandlers();
 
-        // Dynamically import p-limit (ES Module)
-        // Use Function constructor to prevent TypeScript from transforming the import
-        const pLimit = (await (new Function('specifier', 'return import(specifier)')('p-limit') as Promise<any>)).default;
+        // p-limit is pinned to its last CommonJS release (3.1.0) so it can be a normal
+        // static import. This avoids the runtime dynamic import() that breaks inside an
+        // Electron asar archive (Electron's ESM loader cannot read ESM from asar).
         this.limit = pLimit(this.config.maxConcurrency);
 
         // Create initial pool of windows

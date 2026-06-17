@@ -1,6 +1,6 @@
 {
   "name": "@mellowtel-inc/mellowtel-electron",
-  "version": "700.0.28",
+  "version": "700.0.29",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "repository": {
@@ -32,7 +32,7 @@
     "@types/turndown": ">=5.0.4",
     "electron-store": ">=8.2.0 && <9.0.0",
     "isomorphic-ws": ">=5.0.0",
-    "p-limit": "^7.2.0",
+    "p-limit": "3.1.0",
     "sweetalert2": "^11.14.5",
     "turndown": ">=7.1.2",
     "ws": "*"
