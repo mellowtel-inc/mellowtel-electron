@@ -1,4 +1,4 @@
-import { BrowserWindow, session, app } from 'electron';
+import { BrowserWindow, session, app, Session } from 'electron';
 import { Logger } from '../logger/logger';
 import * as os from 'os';
 import * as path from 'path';
@@ -45,6 +45,8 @@ function getDialogBlockPreloadPath(): string {
 
 interface PooledWindow {
     window: BrowserWindow;
+    session: Session; // the reusable per-slot session backing this window
+    slot: number;     // fixed slot index (0..poolSize-1) that owns the session
     id: string;
     inUse: boolean;
     createdAt: number;
@@ -101,6 +103,15 @@ export class WindowPool {
     private cleanupInterval: NodeJS.Timeout | null = null;
     private initialized: boolean = false;
     private creatingWindow: boolean = false; // Lock to prevent concurrent window creation
+    // Fixed set of session slots. Each live window owns one slot; its session is
+    // session.fromPartition(`mellowtel-pool-slot-<slot>`). Reusing a bounded set of
+    // partition names caps the number of Electron sessions (and their network
+    // contexts, which hold OS threads + Mach ports) at poolSize, which is the core
+    // fix for the handle/port leak.
+    private freeSlots: number[] = [];
+    // Slots whose session has already had its one-time handlers attached. Persists
+    // for the process lifetime because fromPartition sessions are never destroyed.
+    private sessionInitializedSlots: Set<number> = new Set();
 
     private constructor(config: Partial<WindowPoolConfig> = {}) {
         this.config = { ...DEFAULT_CONFIG, ...config };
@@ -131,6 +142,9 @@ export class WindowPool {
         // static import. This avoids the runtime dynamic import() that breaks inside an
         // Electron asar archive (Electron's ESM loader cannot read ESM from asar).
         this.limit = pLimit(this.config.maxConcurrency);
+
+        // Initialize the fixed set of session slots (one reusable session per slot).
+        this.freeSlots = Array.from({ length: this.config.poolSize }, (_, i) => i);
 
         // Create initial pool of windows
         for (let i = 0; i < this.config.poolSize; i++) {
@@ -168,47 +182,67 @@ export class WindowPool {
     }
 
     /**
-     * Create a new pooled window
+     * Reserve a session slot. Slots index a fixed set of reusable sessions (one
+     * per slot), so the number of live sessions never exceeds poolSize.
      */
-    private async createPooledWindow(): Promise<PooledWindow> {
-        const windowId = `window-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    private acquireSlot(): number {
+        const slot = this.freeSlots.shift();
+        if (slot === undefined) {
+            // Should be unreachable: live windows are capped at poolSize and every
+            // disposal path frees its slot. Guard so accounting bugs fail loudly.
+            throw new Error('[WindowPool] No free session slot available (slot accounting invariant violated)');
+        }
+        return slot;
+    }
 
-        // Create unique session for each window
-        const uniqueSession = session.fromPartition(`pool-${windowId}`);
+    /**
+     * Return a slot to the free set so its session can be reused by a new window.
+     */
+    private releaseSlot(slot: number): void {
+        if (!this.freeSlots.includes(slot)) {
+            this.freeSlots.push(slot);
+        }
+    }
+
+    /**
+     * Attach the one-time, session-level handlers for a pool slot's session.
+     * Must run at most once per slot session: setter APIs replace on re-call, but
+     * session.on('will-download') would accumulate a listener on every reuse.
+     */
+    private setupSlotSession(slotSession: Session, slot: number): void {
+        const platform = os.platform();
 
         // Prevent downloads from being saved to disk
-        uniqueSession.on('will-download', (event, item, webContents) => {
-            Logger.log(`[WindowPool] Download blocked in ${windowId}`);
+        slotSession.on('will-download', (event) => {
+            Logger.log(`[WindowPool] Download blocked in slot ${slot}`);
             event.preventDefault();
         });
 
         // CRITICAL: Deny all permission requests silently (no dialogs)
-        uniqueSession.setPermissionRequestHandler((_webContents, permission, callback) => {
+        slotSession.setPermissionRequestHandler((_webContents, permission, callback) => {
             Logger.log(`[WindowPool] Permission request denied: ${permission}`);
             callback(false); // Deny all permissions
         });
 
         // Deny permission checks too (synchronous check)
-        uniqueSession.setPermissionCheckHandler((_webContents, permission, _requestingOrigin) => {
+        slotSession.setPermissionCheckHandler((_webContents, permission, _requestingOrigin) => {
             Logger.log(`[WindowPool] Permission check denied: ${permission}`);
             return false; // Deny all
         });
 
         // Block device access requests
-        uniqueSession.setDevicePermissionHandler((details) => {
+        slotSession.setDevicePermissionHandler((details) => {
             Logger.log(`[WindowPool] Device access denied: ${details.deviceType}`);
             return false;
         });
 
         // Block certificate errors silently (no dialogs)
-        uniqueSession.setCertificateVerifyProc((request, callback) => {
+        slotSession.setCertificateVerifyProc((_request, callback) => {
             callback(0); // Accept all certificates to avoid dialogs
         });
 
-        // Set up stealth headers ONCE for this window's session
-        // This prevents accumulating listeners on every request
-        const platform = os.platform();
-        uniqueSession.webRequest.onBeforeSendHeaders((details, callback) => {
+        // Set up stealth headers once for this slot's session
+        slotSession.webRequest.onBeforeSendHeaders((details, callback) => {
             const headers = {
                 ...details.requestHeaders,
                 'Referer': 'https://www.google.com/',
@@ -228,6 +262,46 @@ export class WindowPool {
 
             callback({ requestHeaders: headers });
         });
+    }
+
+    /**
+     * Create a new pooled window.
+     *
+     * Uses a per-slot reusable session (see setupSlotSession) so the number of
+     * Electron sessions, and the network contexts that hold OS threads + Mach
+     * ports, stays capped at poolSize. Minting a unique session per window was the
+     * source of the handle/port leak.
+     */
+    private async createPooledWindow(): Promise<PooledWindow> {
+        // Reserve a slot synchronously (before any await) so two concurrent
+        // creations can never grab the same slot / session.
+        const slot = this.acquireSlot();
+        const windowId = `window-slot${slot}-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+        const platform = os.platform();
+
+        let createdWindow: BrowserWindow | undefined;
+        try {
+            // One session per pool slot, reused across window generations.
+            const slotSession = session.fromPartition(`mellowtel-pool-slot-${slot}`);
+
+            if (this.sessionInitializedSlots.has(slot)) {
+                // Reused session: reset per-generation state so the new window starts
+                // like a fresh profile (matches the old unique-session behavior) and
+                // per-session cache/cookies stay bounded.
+                try {
+                    await slotSession.closeAllConnections();
+                    await slotSession.clearStorageData();
+                    await slotSession.clearCache();
+                } catch (err) {
+                    Logger.error(`[WindowPool] Error resetting session for slot ${slot}: ${err}`);
+                }
+            } else {
+                // First use of this slot's session: attach session-level handlers once.
+                this.setupSlotSession(slotSession, slot);
+                this.sessionInitializedSlots.add(slot);
+            }
+
+            const uniqueSession = slotSession;
 
         const win = new BrowserWindow({
             show: false,
@@ -252,6 +326,7 @@ export class WindowPool {
                 spellcheck: false,      // Disable spellcheck popups
             }
         });
+        createdWindow = win;
 
         // CRITICAL: Prevent beforeunload dialogs
         win.webContents.on('will-prevent-unload', (event) => {
@@ -391,6 +466,8 @@ export class WindowPool {
 
         const pooledWindow: PooledWindow = {
             window: win,
+            session: uniqueSession,
+            slot,
             id: windowId,
             inUse: false,
             createdAt: Date.now(),
@@ -400,9 +477,18 @@ export class WindowPool {
         };
 
         this.pool.push(pooledWindow);
-        Logger.log(`[WindowPool] Created window ${windowId}. Pool size: ${this.pool.length}`);
+        Logger.log(`[WindowPool] Created window ${windowId} on slot ${slot}. Pool size: ${this.pool.length}`);
 
         return pooledWindow;
+        } catch (error) {
+            // Creation failed after reserving the slot: destroy any half-created
+            // window and return the slot so capacity is not permanently lost.
+            if (createdWindow && !createdWindow.isDestroyed()) {
+                createdWindow.destroy();
+            }
+            this.releaseSlot(slot);
+            throw error;
+        }
     }
 
     /**
@@ -649,8 +735,10 @@ export class WindowPool {
             pooledWindow.window.destroy();
         }
 
-        // Remove from pool
+        // Remove from pool and free its slot so the replacement can reuse the
+        // slot's session (reset on reuse inside createPooledWindow).
         this.pool.splice(index, 1);
+        this.releaseSlot(pooledWindow.slot);
 
         // Create new window
         await this.createPooledWindow();
@@ -669,7 +757,9 @@ export class WindowPool {
                 pooledWindow.window.destroy();
             }
             this.pool.splice(index, 1);
-            Logger.log(`[WindowPool] Removed window ${windowId}. Pool size: ${this.pool.length}`);
+            // Free the slot so its session can be reused by a future window.
+            this.releaseSlot(pooledWindow.slot);
+            Logger.log(`[WindowPool] Removed window ${windowId} (slot ${pooledWindow.slot}). Pool size: ${this.pool.length}`);
         }
     }
 
@@ -818,14 +908,20 @@ export class WindowPool {
             this.cleanupInterval = null;
         }
 
-        // Destroy all windows
+        // Destroy all windows and release their network resources
         for (const pooledWindow of this.pool) {
             if (!pooledWindow.window.isDestroyed()) {
                 pooledWindow.window.destroy();
             }
+            pooledWindow.session.closeAllConnections().catch(() => { /* best effort */ });
         }
 
         this.pool = [];
+        // Reset slot availability so a later initialize() can allocate again.
+        // sessionInitializedSlots is intentionally NOT reset: fromPartition sessions
+        // are cached for the process lifetime and keep their one-time handlers, so
+        // re-attaching would leak listeners.
+        this.freeSlots = [];
         this.initialized = false;
 
         Logger.log('[WindowPool] Shutdown complete');
