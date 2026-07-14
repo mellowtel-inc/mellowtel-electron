@@ -1,0 +1,346 @@
+import WebSocket from 'isomorphic-ws';
+import { RateLimiter } from './local-rate-limiting/rate-limiter';
+import { Logger } from './logger/logger';
+import { VERSION } from './constants';
+import { makeFetchRequest, processUrl, processHtmlContent } from './utils/data-helpers';
+import { getCerealManager } from './utils/cereal-manager';
+import { getS3SignedUrls, uploadToS3, saveCrawl } from './utils/put-to-signed';
+import { DataRequest } from './utils/data-request';
+import { incrementRequestCount } from './storage/request-counter';
+import os from 'os';
+
+export class WebSocketManager {
+    private static instance: WebSocketManager;
+    private ws: WebSocket | null = null;
+    private readonly wsUrl: string = "wss://ws.mellow.tel";
+    private identifier: string;
+    private reconnectAttempts: number = 0;
+    private readonly maxReconnectAttempts: number = 5;
+    private readonly reconnectDelay: number = 5000;
+    private isConnecting: boolean = false;
+    private isVoluntarilyDisconnected: boolean = false;
+    private pingInterval: NodeJS.Timeout | null = null;
+    private pongTimeout: NodeJS.Timeout | null = null;
+    private healthCheckInterval: NodeJS.Timeout | null = null;
+    private readonly pingIntervalTime: number = 60000; // 60 seconds
+    private readonly pongTimeoutTime: number = 5000; // receive pong back in < 5 seconds
+    private readonly healthCheckIntervalTime: number = 15 * 60 * 1000; // 15 minutes
+
+    private constructor() {
+        this.identifier = '';
+        const totalMemoryGB = (os.totalmem() / (1024 * 1024 * 1024)).toFixed(2);
+        Logger.log(`[WebSocketManager]: System RAM: ${totalMemoryGB}GB`);
+    }
+
+    public static getInstance(): WebSocketManager {
+        if (!WebSocketManager.instance) {
+            WebSocketManager.instance = new WebSocketManager();
+        }
+        return WebSocketManager.instance;
+    }
+
+    public async initialize(identifier: string): Promise<boolean> {
+        this.identifier = identifier;
+
+        if (this.ws !== null) {
+            Logger.log("[WebSocketManager]: WebSocket is already connected");
+            return true;
+        }
+
+        if (this.isConnecting) {
+            Logger.log("[WebSocketManager]: WebSocket connection is in progress");
+            return false;
+        }
+
+        if (!RateLimiter.shouldContinue(false)) {
+            return false;
+        }
+
+        return await this.establishConnection();
+    }
+
+    private async establishConnection(): Promise<boolean> {
+        try {
+            this.isConnecting = true;
+
+            const speedMbps = 500 as number;
+            //  await MeasureConnectionSpeed();
+            // Logger.log(`[WebSocketManager]: Connection speed: ${speedMbps} Mbps`);
+
+            const rawPlatform = os.platform();
+
+            let platform = rawPlatform == 'darwin' ? 'macos' : rawPlatform == 'win32' ? 'windows' : 'linux'
+
+            this.ws = new WebSocket(
+                `${this.wsUrl}?device_id=${this.identifier}&version=${VERSION}&platform=electron-${platform}` + (speedMbps != -1 ? `&speed_download=${speedMbps}` : ``)
+            );
+
+            this.setupWebSocketListeners();
+            return true;
+        } catch (error) {
+            Logger.error(`[WebSocketManager]: Connection error - ${error}`);
+            return false;
+        } finally {
+            this.isConnecting = false;
+        }
+    }
+
+    private setupWebSocketListeners(): void {
+        if (!this.ws) return;
+
+        this.ws.onopen = () => {
+            Logger.log("[WebSocketManager]: Connection established!!!");
+            this.reconnectAttempts = 0;
+            this.isVoluntarilyDisconnected = false;
+            this.startPing();
+            this.startHealthCheck();
+        };
+
+        this.ws.onclose = () => {
+            Logger.log("[WebSocketManager]: Connection closed");
+            this.resetSocket();
+        };
+
+        this.ws.onerror = (error: any) => {
+            Logger.error(`[WebSocketManager]: WebSocket error - ${error}`);
+        };
+
+        this.ws.onmessage = async (data: any) => {
+            Logger.log(`[WebSocketManager]: Message received from server`);
+            await this.handleIncomingMessage(data);
+        };
+
+        this.ws.on('pong', () => {
+            Logger.log("[WebSocketManager]: Received pong");
+            this.clearPongTimeout();
+        });
+    }
+
+    private startPing(): void {
+        this.stopPing();
+        this.pingInterval = setInterval(() => {
+            if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                this.ws.ping();
+                this.startPongTimeout();
+            }
+        }, this.pingIntervalTime);
+    }
+
+    private stopPing(): void {
+        if (this.pingInterval) {
+            clearInterval(this.pingInterval);
+            this.pingInterval = null;
+        }
+        this.clearPongTimeout();
+    }
+
+    private startHealthCheck(): void {
+        this.stopHealthCheck();
+        Logger.log("[WebSocketManager]: Starting health check interval (every 15 minutes)");
+        this.healthCheckInterval = setInterval(() => {
+            this.performHealthCheck();
+        }, this.healthCheckIntervalTime);
+    }
+
+    private stopHealthCheck(): void {
+        if (this.healthCheckInterval) {
+            clearInterval(this.healthCheckInterval);
+            this.healthCheckInterval = null;
+        }
+    }
+
+    private performHealthCheck(): void {
+        Logger.log("[WebSocketManager]: Performing health check...");
+        
+        // Don't reconnect if voluntarily disconnected (user opted out)
+        if (this.isVoluntarilyDisconnected) {
+            Logger.log("[WebSocketManager]: Health check skipped - voluntarily disconnected");
+            return;
+        }
+
+        // Check if WebSocket is connected and open
+        const isConnected = this.ws !== null && this.ws.readyState === WebSocket.OPEN;
+        
+        if (!isConnected) {
+            Logger.log("[WebSocketManager]: Health check detected disconnected state, attempting to reconnect...");
+            // Reset reconnect attempts to allow fresh reconnection
+            this.reconnectAttempts = 0;
+            this.initialize(this.identifier);
+        } else {
+            Logger.log("[WebSocketManager]: Health check passed - WebSocket is connected");
+        }
+    }
+
+    private startPongTimeout(): void {
+        this.clearPongTimeout();
+        this.pongTimeout = setTimeout(() => {
+            Logger.log("[WebSocketManager]: Pong timeout, closing the current socket..");
+            if (this.ws) {
+                this.ws.close();
+            }
+        }, this.pongTimeoutTime);
+    }
+
+    private clearPongTimeout(): void {
+        if (this.pongTimeout) {
+            clearTimeout(this.pongTimeout);
+            this.pongTimeout = null;
+        }
+    }
+
+    private async handleIncomingMessage(data: any): Promise<void> {
+        try {
+            const json = JSON.parse(data.data);
+
+            if (json.type_event === 'batch') {
+                const batchArray = JSON.parse(json.batch_array);
+                await this.handleBatchRequest(batchArray, json.batch_id, json.parallel_executions_batch, json.delay_between_executions);
+            } else {
+                if (!json.url) return;
+
+                const dataRequest = DataRequest.fromJson(json);
+                Logger.log(`[WebSocketManager]: Received URL to process - ${dataRequest.url}`);
+
+                if (!RateLimiter.shouldContinue()) {
+                    await this.handleRateLimitReached();
+                    return;
+                }
+
+                // Process request directly - window pool handles concurrency control
+                // Requests that timeout (50s) will be automatically dropped
+                this.processDataRequest(dataRequest).catch(error => {
+                    Logger.error(`[WebSocketManager]: Error processing request for ${dataRequest.url} - ${error.message}`);
+                    // Request is dropped on error (including timeout errors from window pool)
+                });
+            }
+        } catch (error) {
+            Logger.error(`[WebSocketManager]: Error handling message - ${error}`);
+        }
+    }
+
+    private async handleBatchRequest(requests: any[], batch_id: string, parallelExecutions: number, delay: number): Promise<void> {
+        for (let i = 0; i < requests.length; i += parallelExecutions) {
+            const chunk = requests.slice(i, i + parallelExecutions);
+            const promises = chunk.map(requestData => {
+                const dataRequest = DataRequest.fromJson(requestData);
+                // Catch errors (including timeouts) to prevent one failure from stopping the batch
+                return this.processDataRequest(dataRequest, true, batch_id).catch(error => {
+                    Logger.error(`[WebSocketManager]: Batch request failed for ${dataRequest.url} - ${error.message}`);
+                    // Request is dropped on error (including timeout errors from window pool)
+                });
+            });
+
+            await Promise.allSettled(promises);
+
+            if (i + parallelExecutions < requests.length) {
+                await new Promise(resolve => setTimeout(resolve, delay));
+            }
+        }
+    }
+
+    private async processDataRequest(dataRequest: DataRequest, batch_execution = false, batch_id = ''): Promise<void> {
+        let processedContent: { html: string; markdown: string; screenshot?: Buffer; contentType?: string } | undefined;
+        let fileNameBytes: string = "";
+        if (dataRequest.parser_job) {
+            // Simple fetch for parser jobs - use the URL directly
+            const response = await fetch(dataRequest.url);
+            const content = await response.text();
+            processedContent = { html: content, markdown: '' };
+        } else if (dataRequest.method_endpoint) {
+            const fetchResult = await makeFetchRequest(dataRequest);
+            if (dataRequest.saveFile) {
+                const { uploadUrl, fileName } = await getS3SignedUrls(dataRequest.recordID, fetchResult.contentType ?? 'application/octet-stream');
+                await uploadToS3(uploadUrl, fetchResult.contentType ?? 'application/octet-stream', fetchResult.content);
+                fileNameBytes = fileName;
+                // For saved files, don't process content further
+                processedContent = { html: '', markdown: '' };
+            } else {
+                // Convert Buffer to string and process like processUrl does
+                const contentString = fetchResult.content.toString('utf-8');
+                processedContent = await processHtmlContent(contentString, dataRequest);
+            }
+        } else {
+            processedContent = await processUrl(dataRequest);
+        }
+
+        let cereal_result: any = {};
+        try {
+            if (JSON.parse(dataRequest.cerealObject).useCereal) {
+                Logger.log("[processDataRequest] : using cereal [🥣] with optimized CerealManager");
+
+                // Use optimized CerealManager instead of cerealMain
+                const cerealManager = getCerealManager();
+                cereal_result = await cerealManager.processCerealJob(
+                    dataRequest.cerealObject,
+                    dataRequest.recordID,
+                    processedContent.html
+                );
+
+                Logger.log("[processDataRequest] : cereal_result => ");
+                Logger.log(cereal_result);
+                Logger.log("############################################");
+            }
+        } catch (e) {
+            Logger.log(
+                "[processDataRequest] : error in cereal processing => ",
+                e,
+            );
+            cereal_result = {};
+        }
+
+        await saveCrawl(
+            dataRequest,
+            processedContent.html,
+            processedContent.markdown,
+            batch_execution,
+            batch_id,
+            false,
+            cereal_result,
+            fileNameBytes
+        );
+
+        // Increment request count after successful processing
+        incrementRequestCount();
+    }
+
+    private async handleRateLimitReached(): Promise<void> {
+        Logger.log("[WebSocketManager]: Rate limit reached, closing connection...");
+        this.disconnect();
+    }
+
+    private async reconnect(): Promise<void> {
+        if (this.reconnectAttempts === -1) {
+            /// The websocket has been voluntarily disconnected.
+            return;
+        }
+
+        if (this.reconnectAttempts < this.maxReconnectAttempts) {
+            this.reconnectAttempts++;
+            Logger.log(`[WebSocketManager]: Attempting to reconnect (${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
+            setTimeout(() => {
+                this.initialize(this.identifier);
+            }, this.reconnectDelay);
+        }
+    }
+
+    private resetSocket(): void {
+        if (this.ws) {
+            this.ws = null;
+            this.stopPing();
+            this.reconnect();
+        }
+    }
+
+    /// Voluntarily disconnect websocket
+    public disconnect(): void {
+        Logger.log("[WebSocketManager]: Voluntarily disconnecting...");
+        this.isVoluntarilyDisconnected = true;
+        this.reconnectAttempts = -1;
+        this.stopPing();
+        this.stopHealthCheck();
+        if (this.ws) {
+            this.ws.close();
+            this.ws = null;
+        }
+    }
+}

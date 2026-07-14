@@ -1,0 +1,932 @@
+import { BrowserWindow, session, app, Session } from 'electron';
+import { Logger } from '../logger/logger';
+import * as os from 'os';
+import * as path from 'path';
+import * as fs from 'fs';
+import * as crypto from 'crypto';
+import pLimit from 'p-limit';
+import { DIALOG_BLOCK_SOURCE } from './dialog-block-source';
+
+// Preload that stubs alert/confirm/prompt before page scripts run (fixes
+// Windows dialog leak). DIALOG_BLOCK_SOURCE is a string constant imported
+// from ./dialog-block-source.ts; we write it to userData on first use and
+// hand Electron the resulting file path. Going through a string + runtime
+// write avoids any __dirname / relative-file resolution, so the fix works
+// even when host apps bundle their main process (webpack, vite, esbuild).
+let cachedDialogPreloadPath: string | null = null;
+
+function getDialogBlockPreloadPath(): string {
+    if (cachedDialogPreloadPath) {
+        return cachedDialogPreloadPath;
+    }
+    const hash = crypto.createHash('sha1').update(DIALOG_BLOCK_SOURCE).digest('hex').slice(0, 12);
+    const dir = path.join(app.getPath('userData'), 'mellowtel-preload');
+    fs.mkdirSync(dir, { recursive: true });
+    const filePath = path.join(dir, `dialog-block-${hash}.js`);
+    if (!fs.existsSync(filePath)) {
+        fs.writeFileSync(filePath, DIALOG_BLOCK_SOURCE, 'utf8');
+        Logger.log(`[WindowPool] Wrote dialog-block preload to ${filePath}`);
+    }
+    cachedDialogPreloadPath = filePath;
+    return filePath;
+}
+
+/**
+ * Window Pool Manager
+ * 
+ * Manages a pool of reusable BrowserWindows to prevent unbounded window creation.
+ * Key features:
+ * 1. Pool of reusable windows (default: 10 windows)
+ * 2. Concurrency control (max 5-10 concurrent operations)
+ * 3. Automatic cleanup and window recycling
+ * 4. Memory leak prevention
+ * 5. Window health monitoring and rotation
+ */
+
+interface PooledWindow {
+    window: BrowserWindow;
+    session: Session; // the reusable per-slot session backing this window
+    slot: number;     // fixed slot index (0..poolSize-1) that owns the session
+    id: string;
+    inUse: boolean;
+    createdAt: number;
+    usageCount: number;
+    lastUsedAt: number;
+    needsRotation: boolean; // Flag to mark window for rotation when it becomes idle
+}
+
+interface WindowPoolConfig {
+    poolSize: number;
+    maxConcurrency: number;
+    maxWindowAge: number; // milliseconds
+    maxWindowUsage: number; // number of times a window can be reused
+    cleanupInterval: number; // milliseconds
+}
+
+/**
+ * Calculate optimal pool size based on available system RAM
+ * Each Electron window uses approximately 100-150MB of RAM
+ */
+function calculateOptimalPoolSize(): number {
+    try {
+        const totalMemoryGB = os.totalmem() / (1024 * 1024 * 1024);
+
+        // Conservative estimates based on available RAM
+        if (totalMemoryGB < 4) {
+            return 2; // Low RAM devices (< 4GB): 2 windows
+        } else if (totalMemoryGB < 8) {
+            return 3; // Medium RAM devices (4-8GB): 3 windows
+        } else if (totalMemoryGB < 16) {
+            return 5; // Good RAM devices (8-16GB): 5 windows
+        } else {
+            return 8; // High RAM devices (16GB+): 8 windows
+        }
+    } catch {
+        return 4;
+    }
+
+}
+
+const DEFAULT_CONFIG: WindowPoolConfig = {
+    poolSize: calculateOptimalPoolSize(),
+    maxConcurrency: calculateOptimalPoolSize(), // Match pool size
+    maxWindowAge: 5 * 60 * 1000, // 5 minutes
+    maxWindowUsage: 50, // recycle after 50 uses
+    cleanupInterval: 2 * 60 * 1000, // 2 minutes
+};
+
+export class WindowPool {
+    private static instance: WindowPool;
+    private pool: PooledWindow[] = [];
+    private config: WindowPoolConfig;
+    private limit: any;
+    private cleanupInterval: NodeJS.Timeout | null = null;
+    private initialized: boolean = false;
+    private creatingWindow: boolean = false; // Lock to prevent concurrent window creation
+    // Fixed set of session slots. Each live window owns one slot; its session is
+    // session.fromPartition(`mellowtel-pool-slot-<slot>`). Reusing a bounded set of
+    // partition names caps the number of Electron sessions (and their network
+    // contexts, which hold OS threads + Mach ports) at poolSize, which is the core
+    // fix for the handle/port leak.
+    private freeSlots: number[] = [];
+    // Slots whose session has already had its one-time handlers attached. Persists
+    // for the process lifetime because fromPartition sessions are never destroyed.
+    private sessionInitializedSlots: Set<number> = new Set();
+
+    private constructor(config: Partial<WindowPoolConfig> = {}) {
+        this.config = { ...DEFAULT_CONFIG, ...config };
+    }
+
+    public static getInstance(config?: Partial<WindowPoolConfig>): WindowPool {
+        if (!WindowPool.instance) {
+            WindowPool.instance = new WindowPool(config);
+        }
+        return WindowPool.instance;
+    }
+
+    /**
+     * Initialize the window pool
+     */
+    public async initialize(): Promise<void> {
+        if (this.initialized) {
+            Logger.log('[WindowPool] Already initialized');
+            return;
+        }
+
+        Logger.log(`[WindowPool] Initializing pool with ${this.config.poolSize} windows, max concurrency: ${this.config.maxConcurrency}`);
+
+        // Set up app-level crash handlers to prevent dialogs
+        this.setupCrashHandlers();
+
+        // p-limit is pinned to its last CommonJS release (3.1.0) so it can be a normal
+        // static import. This avoids the runtime dynamic import() that breaks inside an
+        // Electron asar archive (Electron's ESM loader cannot read ESM from asar).
+        this.limit = pLimit(this.config.maxConcurrency);
+
+        // Initialize the fixed set of session slots (one reusable session per slot).
+        this.freeSlots = Array.from({ length: this.config.poolSize }, (_, i) => i);
+
+        // Create initial pool of windows
+        for (let i = 0; i < this.config.poolSize; i++) {
+            await this.createPooledWindow();
+        }
+
+        this.initialized = true;
+        this.startPeriodicCleanup();
+
+        Logger.log(`[WindowPool] Initialized successfully. Pool size: ${this.pool.length}`);
+    }
+
+    /**
+     * Set up app-level crash handlers to prevent system dialogs
+     */
+    private setupCrashHandlers(): void {
+        // Handle child process crashes silently
+        app.on('child-process-gone', (_event, details) => {
+            Logger.log(`[WindowPool] Child process gone: ${details.type} - ${details.reason}`);
+            // Don't show any dialog, just log
+        });
+
+        // Handle render process crashes at app level (backup for per-window handler)
+        app.on('render-process-gone', (_event, _webContents, details) => {
+            Logger.log(`[WindowPool] Render process gone (app-level): ${details.reason}`);
+            // Window pool will handle cleanup via per-window handler
+        });
+
+        // Handle GPU info updates silently
+        app.on('gpu-info-update', () => {
+            // GPU info updated, no action needed
+        });
+
+        Logger.log('[WindowPool] Crash handlers initialized');
+    }
+
+    /**
+     * Reserve a session slot. Slots index a fixed set of reusable sessions (one
+     * per slot), so the number of live sessions never exceeds poolSize.
+     */
+    private acquireSlot(): number {
+        const slot = this.freeSlots.shift();
+        if (slot === undefined) {
+            // Should be unreachable: live windows are capped at poolSize and every
+            // disposal path frees its slot. Guard so accounting bugs fail loudly.
+            throw new Error('[WindowPool] No free session slot available (slot accounting invariant violated)');
+        }
+        return slot;
+    }
+
+    /**
+     * Return a slot to the free set so its session can be reused by a new window.
+     */
+    private releaseSlot(slot: number): void {
+        if (!this.freeSlots.includes(slot)) {
+            this.freeSlots.push(slot);
+        }
+    }
+
+    /**
+     * Attach the one-time, session-level handlers for a pool slot's session.
+     * Must run at most once per slot session: setter APIs replace on re-call, but
+     * session.on('will-download') would accumulate a listener on every reuse.
+     */
+    private setupSlotSession(slotSession: Session, slot: number): void {
+        const platform = os.platform();
+
+        // Prevent downloads from being saved to disk
+        slotSession.on('will-download', (event) => {
+            Logger.log(`[WindowPool] Download blocked in slot ${slot}`);
+            event.preventDefault();
+        });
+
+        // CRITICAL: Deny all permission requests silently (no dialogs)
+        slotSession.setPermissionRequestHandler((_webContents, permission, callback) => {
+            Logger.log(`[WindowPool] Permission request denied: ${permission}`);
+            callback(false); // Deny all permissions
+        });
+
+        // Deny permission checks too (synchronous check)
+        slotSession.setPermissionCheckHandler((_webContents, permission, _requestingOrigin) => {
+            Logger.log(`[WindowPool] Permission check denied: ${permission}`);
+            return false; // Deny all
+        });
+
+        // Block device access requests
+        slotSession.setDevicePermissionHandler((details) => {
+            Logger.log(`[WindowPool] Device access denied: ${details.deviceType}`);
+            return false;
+        });
+
+        // Block certificate errors silently (no dialogs)
+        slotSession.setCertificateVerifyProc((_request, callback) => {
+            callback(0); // Accept all certificates to avoid dialogs
+        });
+
+        // Set up stealth headers once for this slot's session
+        slotSession.webRequest.onBeforeSendHeaders((details, callback) => {
+            const headers = {
+                ...details.requestHeaders,
+                'Referer': 'https://www.google.com/',
+                'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="139", "Google Chrome";v="139"',
+                'sec-ch-ua-mobile': '?0',
+                'sec-ch-ua-platform': platform === 'win32' ? '"Windows"' : '"macOS"',
+                'sec-fetch-dest': 'document',
+                'sec-fetch-mode': 'navigate',
+                'sec-fetch-site': 'cross-site',
+                'sec-fetch-user': '?1',
+                'upgrade-insecure-requests': '1',
+                'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+                'accept-language': 'en-US,en;q=0.9',
+                'accept-encoding': 'gzip, deflate, br, zstd',
+                'cache-control': 'max-age=0'
+            };
+
+            callback({ requestHeaders: headers });
+        });
+    }
+
+    /**
+     * Create a new pooled window.
+     *
+     * Uses a per-slot reusable session (see setupSlotSession) so the number of
+     * Electron sessions, and the network contexts that hold OS threads + Mach
+     * ports, stays capped at poolSize. Minting a unique session per window was the
+     * source of the handle/port leak.
+     */
+    private async createPooledWindow(): Promise<PooledWindow> {
+        // Reserve a slot synchronously (before any await) so two concurrent
+        // creations can never grab the same slot / session.
+        const slot = this.acquireSlot();
+        const windowId = `window-slot${slot}-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+        const platform = os.platform();
+
+        let createdWindow: BrowserWindow | undefined;
+        try {
+            // One session per pool slot, reused across window generations.
+            const slotSession = session.fromPartition(`mellowtel-pool-slot-${slot}`);
+
+            if (this.sessionInitializedSlots.has(slot)) {
+                // Reused session: reset per-generation state so the new window starts
+                // like a fresh profile (matches the old unique-session behavior) and
+                // per-session cache/cookies stay bounded.
+                try {
+                    await slotSession.closeAllConnections();
+                    await slotSession.clearStorageData();
+                    await slotSession.clearCache();
+                } catch (err) {
+                    Logger.error(`[WindowPool] Error resetting session for slot ${slot}: ${err}`);
+                }
+            } else {
+                // First use of this slot's session: attach session-level handlers once.
+                this.setupSlotSession(slotSession, slot);
+                this.sessionInitializedSlots.add(slot);
+            }
+
+            const uniqueSession = slotSession;
+
+        const win = new BrowserWindow({
+            show: false,
+            width: 1709,
+            height: 984,
+            x: -10000,                  // Position off-screen as failsafe
+            y: -10000,
+            focusable: false,           // Prevent focus stealing
+            webPreferences: {
+                offscreen: true,
+                nodeIntegration: false,
+                // Preload must patch the page's window; isolated preload cannot do that.
+                contextIsolation: false,
+                nodeIntegrationInSubFrames: true,
+                preload: getDialogBlockPreloadPath(),
+                disableDialogs: true,
+                session: uniqueSession,
+                webSecurity: true,
+                allowRunningInsecureContent: false,
+                experimentalFeatures: false,
+                enablePreferredSizeMode: false,
+                spellcheck: false,      // Disable spellcheck popups
+            }
+        });
+        createdWindow = win;
+
+        // CRITICAL: Prevent beforeunload dialogs
+        win.webContents.on('will-prevent-unload', (event) => {
+            Logger.log(`[WindowPool] Prevented beforeunload dialog in ${windowId}`);
+            event.preventDefault();
+        });
+
+        // CRITICAL: Block HTTP authentication dialogs
+        win.webContents.on('login', (event, _details, _authInfo, callback) => {
+            Logger.log(`[WindowPool] HTTP auth blocked in ${windowId}`);
+            event.preventDefault();
+            callback('', ''); // Provide empty credentials
+        });
+
+        // BLOCK: Print dialog
+        (win.webContents as any).on('will-print', (event: any) => {
+            Logger.log(`[WindowPool] Print blocked in ${windowId}`);
+            event.preventDefault();
+        });
+
+        // BLOCK: Client certificate selection dialog
+        win.webContents.on('select-client-certificate', (event, _url, _list, callback) => {
+            Logger.log(`[WindowPool] Client cert selection blocked in ${windowId}`);
+            event.preventDefault();
+            callback(undefined as any);
+        });
+
+        // BLOCK: Bluetooth device selection
+        win.webContents.on('select-bluetooth-device', (event, _devices, callback) => {
+            Logger.log(`[WindowPool] Bluetooth selection blocked in ${windowId}`);
+            event.preventDefault();
+            callback('');
+        });
+
+        // BLOCK: Serial port selection
+        (win.webContents as any).on('select-serial-port', (event: any, _ports: any, _webContents: any, callback: any) => {
+            Logger.log(`[WindowPool] Serial port selection blocked in ${windowId}`);
+            event.preventDefault();
+            callback('');
+        });
+
+        // BLOCK: HID device selection
+        (win.webContents as any).on('select-hid-device', (event: any, _details: any, callback: any) => {
+            Logger.log(`[WindowPool] HID device selection blocked in ${windowId}`);
+            event.preventDefault();
+            callback(undefined);
+        });
+
+        // BLOCK: USB device selection
+        (win.webContents as any).on('select-usb-device', (event: any, _details: any, callback: any) => {
+            Logger.log(`[WindowPool] USB device selection blocked in ${windowId}`);
+            event.preventDefault();
+            callback(undefined);
+        });
+
+        // BLOCK: External protocol navigations that could open system apps
+        const BLOCKED_PROTOCOLS = [
+            'mailto:', 'tel:', 'sms:', 'callto:',
+            'ms-windows-store:', 'ms-settings:',
+            'slack:', 'spotify:', 'steam:', 'discord:',
+            'zoommtg:', 'msteams:', 'skype:',
+            'file:', 'ftp:', 'sftp:',
+        ];
+
+        win.webContents.on('will-navigate', (event, url) => {
+            const urlLower = url.toLowerCase();
+            for (const protocol of BLOCKED_PROTOCOLS) {
+                if (urlLower.startsWith(protocol)) {
+                    Logger.log(`[WindowPool] Blocked navigation to ${protocol} in ${windowId}`);
+                    event.preventDefault();
+                    return;
+                }
+            }
+        });
+
+        // Also block external protocols in new-window attempts
+        win.webContents.setWindowOpenHandler(({ url }) => {
+            const urlLower = url.toLowerCase();
+            for (const protocol of BLOCKED_PROTOCOLS) {
+                if (urlLower.startsWith(protocol)) {
+                    Logger.log(`[WindowPool] Blocked popup to ${protocol} in ${windowId}`);
+                    return { action: 'deny' };
+                }
+            }
+            Logger.log(`[WindowPool] Popup blocked in ${windowId}`);
+            return { action: 'deny' }; // Block all popups anyway
+        });
+
+        // Dialog/UI blocking is handled by src/preload/dialog-block.ts (see webPreferences.preload).
+
+        // Ensure window is always muted and can never play sound
+        win.webContents.setAudioMuted(true);
+
+        // CRITICAL: Prevent window from ever becoming visible
+        win.on('show', () => {
+            Logger.log(`[WindowPool] Window ${windowId} attempted to show, hiding it`);
+            win.setPosition(-10000, -10000); // Move off-screen immediately
+            win.hide();
+        });
+
+        // Block focus attempts that could make window visible
+        win.on('focus', () => {
+            Logger.log(`[WindowPool] Window ${windowId} attempted to focus, hiding it`);
+            win.blur();
+            win.hide();
+        });
+
+        // Additional safeguard: Monitor and force hide if window becomes visible
+        const visibilityCheck = setInterval(() => {
+            if (win && !win.isDestroyed() && win.isVisible()) {
+                Logger.log(`[WindowPool] Window ${windowId} became visible, hiding it immediately`);
+                win.hide();
+            }
+        }, 100); // Check every 100ms
+
+        // Clean up interval when window is destroyed
+        win.on('closed', () => {
+            clearInterval(visibilityCheck);
+        });
+
+        // Set OS-specific user agent ONCE for this window
+        const userAgent = platform === 'win32'
+            ? 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36'
+            : 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36';
+
+        win.webContents.setUserAgent(userAgent);
+
+        // Add error handling
+        win.webContents.on('render-process-gone', (event, details) => {
+            Logger.error(`[WindowPool] Window ${windowId} render process gone: ${details.reason}`);
+            this.removeWindowFromPool(windowId);
+        });
+
+        win.on('unresponsive', () => {
+            Logger.error(`[WindowPool] Window ${windowId} became unresponsive`);
+        });
+
+        const pooledWindow: PooledWindow = {
+            window: win,
+            session: uniqueSession,
+            slot,
+            id: windowId,
+            inUse: false,
+            createdAt: Date.now(),
+            usageCount: 0,
+            lastUsedAt: Date.now(),
+            needsRotation: false
+        };
+
+        this.pool.push(pooledWindow);
+        Logger.log(`[WindowPool] Created window ${windowId} on slot ${slot}. Pool size: ${this.pool.length}`);
+
+        return pooledWindow;
+        } catch (error) {
+            // Creation failed after reserving the slot: destroy any half-created
+            // window and return the slot so capacity is not permanently lost.
+            if (createdWindow && !createdWindow.isDestroyed()) {
+                createdWindow.destroy();
+            }
+            this.releaseSlot(slot);
+            throw error;
+        }
+    }
+
+    /**
+     * Acquire a window from the pool with timeout
+     */
+    private async acquireWindow(startTime: number = Date.now()): Promise<PooledWindow> {
+        if (!this.initialized) {
+            await this.initialize();
+        }
+
+        // Check if we've exceeded the 50-second timeout
+        const elapsedTime = Date.now() - startTime;
+        if (elapsedTime > 50000) {
+            const error = new Error('[WindowPool] Timeout: No window became available within 50 seconds');
+            Logger.error(error.message);
+            throw error;
+        }
+
+        // Clean up any destroyed windows from the pool first
+        const destroyedWindows = this.pool.filter(pw => pw.window.isDestroyed());
+        for (const pw of destroyedWindows) {
+            Logger.log(`[WindowPool] Removing destroyed window ${pw.id} from pool during acquisition`);
+            this.removeWindowFromPool(pw.id);
+        }
+
+        // Find an available window that is not destroyed and not marked for rotation
+        // Prefer healthy windows over those marked for rotation
+        let pooledWindow = this.pool.find(pw => !pw.inUse && !pw.window.isDestroyed() && !pw.needsRotation);
+        
+        // If no healthy window available, try windows marked for rotation (they're still usable until rotated)
+        if (!pooledWindow) {
+            pooledWindow = this.pool.find(pw => !pw.inUse && !pw.window.isDestroyed());
+        }
+
+        // If no available window, check if we can create a new one
+        if (!pooledWindow) {
+            const healthyWindows = this.pool.filter(pw => !pw.window.isDestroyed());
+
+            if (healthyWindows.length < this.config.poolSize && !this.creatingWindow) {
+                // Use lock to prevent concurrent window creation
+                this.creatingWindow = true;
+                try {
+                    // Double-check after acquiring lock
+                    const currentHealthyWindows = this.pool.filter(pw => !pw.window.isDestroyed());
+                    if (currentHealthyWindows.length < this.config.poolSize) {
+                        Logger.log('[WindowPool] No available windows, creating new one');
+                        pooledWindow = await this.createPooledWindow();
+                    }
+                } finally {
+                    this.creatingWindow = false;
+                }
+
+                // If we still don't have a window after creation attempt, retry
+                if (!pooledWindow) {
+                    await new Promise(resolve => setTimeout(resolve, 100));
+                    return this.acquireWindow(startTime);
+                }
+            } else {
+                // Wait for a window to become available or for creation lock to be released
+                const remainingTime = 50000 - elapsedTime;
+                Logger.log(`[WindowPool] All windows in use, waiting for one to become available... (${Math.floor(remainingTime / 1000)}s remaining)`);
+                await new Promise(resolve => setTimeout(resolve, 100));
+                return this.acquireWindow(startTime); // Retry with original start time
+            }
+        }
+
+        // Mark window for rotation if needed (but don't rotate now - it's about to be used)
+        // The window will be rotated when it's released back to the pool
+        if (this.shouldRotateWindow(pooledWindow) && !pooledWindow.needsRotation) {
+            pooledWindow.needsRotation = true;
+            Logger.log(`[WindowPool] Window ${pooledWindow.id} marked for rotation (will rotate after use)`);
+        }
+
+        // Final safety check before marking as in use
+        if (pooledWindow.window.isDestroyed()) {
+            Logger.error(`[WindowPool] Window ${pooledWindow.id} was destroyed just before acquisition, retrying...`);
+            this.removeWindowFromPool(pooledWindow.id);
+            await new Promise(resolve => setTimeout(resolve, 100));
+            return this.acquireWindow(startTime);
+        }
+
+        pooledWindow.inUse = true;
+        pooledWindow.usageCount++;
+        pooledWindow.lastUsedAt = Date.now();
+
+        Logger.log(`[WindowPool] Acquired window ${pooledWindow.id}. Usage count: ${pooledWindow.usageCount}`);
+
+        return pooledWindow;
+    }
+
+    /**
+     * Release a window back to the pool
+     */
+    private async releaseWindow(pooledWindow: PooledWindow): Promise<void> {
+        if (pooledWindow.window.isDestroyed()) {
+            Logger.log(`[WindowPool] Window ${pooledWindow.id} was destroyed, removing from pool`);
+            this.removeWindowFromPool(pooledWindow.id);
+            // Create a replacement window to maintain pool size
+            if (this.pool.length < this.config.poolSize && !this.creatingWindow) {
+                this.creatingWindow = true;
+                try {
+                    await this.createPooledWindow();
+                } finally {
+                    this.creatingWindow = false;
+                }
+            }
+            return;
+        }
+
+        // Mark as not in use first
+        pooledWindow.inUse = false;
+        pooledWindow.lastUsedAt = Date.now();
+
+        // If window is marked for rotation, rotate it now (it's idle)
+        if (pooledWindow.needsRotation) {
+            Logger.log(`[WindowPool] Window ${pooledWindow.id} is idle and marked for rotation, rotating now...`);
+            await this.rotateWindow(pooledWindow);
+            return;
+        }
+
+        // Clean up the window before releasing back to pool
+        try {
+            await this.cleanupWindow(pooledWindow.window);
+        } catch (error) {
+            Logger.error(`[WindowPool] Error cleaning up window ${pooledWindow.id}: ${error}`);
+            // If cleanup fails, the window might be in a bad state - remove it
+            if (pooledWindow.window.isDestroyed()) {
+                this.removeWindowFromPool(pooledWindow.id);
+                return;
+            }
+        }
+
+        Logger.log(`[WindowPool] Released window ${pooledWindow.id}`);
+    }
+
+    /**
+     * Execute a task with a pooled window (with concurrency control)
+     */
+    public async executeWithWindow<T>(
+        task: (window: BrowserWindow) => Promise<T>
+    ): Promise<T> {
+        // Ensure pool is initialized before using this.limit
+        if (!this.initialized) {
+            await this.initialize();
+        }
+
+        return this.limit(async () => {
+            const pooledWindow = await this.acquireWindow();
+            const startTime = Date.now();
+
+            // Watchdog timer to detect stuck windows (>60 seconds)
+            const watchdogTimer = setInterval(() => {
+                const elapsedTime = Date.now() - startTime;
+                if (elapsedTime > 60000 && pooledWindow.inUse) {
+                    Logger.error(`[WindowPool] Window ${pooledWindow.id} stuck for ${Math.floor(elapsedTime / 1000)}s, destroying it`);
+                    clearInterval(watchdogTimer);
+                    
+                    // Destroy the stuck window
+                    if (!pooledWindow.window.isDestroyed()) {
+                        pooledWindow.window.destroy();
+                    }
+                    this.removeWindowFromPool(pooledWindow.id);
+                    
+                    // Create replacement window to maintain pool size
+                    if (this.pool.length < this.config.poolSize && !this.creatingWindow) {
+                        this.creatingWindow = true;
+                        this.createPooledWindow().finally(() => {
+                            this.creatingWindow = false;
+                        });
+                    }
+                }
+            }, 5000); // Check every 5 seconds
+
+            try {
+                // Double-check window is not destroyed before executing task
+                if (pooledWindow.window.isDestroyed()) {
+                    throw new Error(`[WindowPool] Window ${pooledWindow.id} was destroyed before task execution`);
+                }
+
+                const result = await task(pooledWindow.window);
+                clearInterval(watchdogTimer);
+                return result;
+            } catch (error) {
+                clearInterval(watchdogTimer);
+                
+                // On ANY error, destroy the window and replace it
+                Logger.error(`[WindowPool] Error in window ${pooledWindow.id}, destroying and replacing: ${error}`);
+                
+                // Destroy the problematic window
+                if (!pooledWindow.window.isDestroyed()) {
+                    pooledWindow.window.destroy();
+                }
+                this.removeWindowFromPool(pooledWindow.id);
+                
+                // Create replacement window to maintain pool size
+                if (this.pool.length < this.config.poolSize && !this.creatingWindow) {
+                    this.creatingWindow = true;
+                    this.createPooledWindow().finally(() => {
+                        this.creatingWindow = false;
+                    });
+                }
+                
+                throw error;
+            } finally {
+                clearInterval(watchdogTimer);
+                await this.releaseWindow(pooledWindow);
+            }
+        });
+    }
+
+    /**
+     * Check if a window should be rotated
+     */
+    private shouldRotateWindow(pooledWindow: PooledWindow): boolean {
+        const age = Date.now() - pooledWindow.createdAt;
+
+        return (
+            age > this.config.maxWindowAge ||
+            pooledWindow.usageCount >= this.config.maxWindowUsage
+        );
+    }
+
+    /**
+     * Rotate a window (destroy and recreate)
+     * Only call this when the window is NOT in use
+     */
+    private async rotateWindow(pooledWindow: PooledWindow): Promise<void> {
+        // Safety check: never rotate a window that's in use
+        if (pooledWindow.inUse) {
+            Logger.error(`[WindowPool] Attempted to rotate window ${pooledWindow.id} while in use - skipping`);
+            return;
+        }
+
+        Logger.log(`[WindowPool] Rotating window ${pooledWindow.id} (age: ${Math.floor((Date.now() - pooledWindow.createdAt) / 1000)}s, usage: ${pooledWindow.usageCount})`);
+
+        const index = this.pool.indexOf(pooledWindow);
+        if (index === -1) {
+            Logger.log(`[WindowPool] Window ${pooledWindow.id} not found in pool, skipping rotation`);
+            return;
+        }
+
+        // Destroy old window
+        if (!pooledWindow.window.isDestroyed()) {
+            pooledWindow.window.destroy();
+        }
+
+        // Remove from pool and free its slot so the replacement can reuse the
+        // slot's session (reset on reuse inside createPooledWindow).
+        this.pool.splice(index, 1);
+        this.releaseSlot(pooledWindow.slot);
+
+        // Create new window
+        await this.createPooledWindow();
+
+        Logger.log(`[WindowPool] Window rotation complete`);
+    }
+
+    /**
+     * Remove a window from the pool
+     */
+    private removeWindowFromPool(windowId: string): void {
+        const index = this.pool.findIndex(pw => pw.id === windowId);
+        if (index !== -1) {
+            const pooledWindow = this.pool[index];
+            if (!pooledWindow.window.isDestroyed()) {
+                pooledWindow.window.destroy();
+            }
+            this.pool.splice(index, 1);
+            // Free the slot so its session can be reused by a future window.
+            this.releaseSlot(pooledWindow.slot);
+            Logger.log(`[WindowPool] Removed window ${windowId} (slot ${pooledWindow.slot}). Pool size: ${this.pool.length}`);
+        }
+    }
+
+    /**
+     * Clean up a window after use
+     */
+    private async cleanupWindow(window: BrowserWindow): Promise<void> {
+        if (window.isDestroyed()) {
+            throw new Error('Cannot cleanup destroyed window');
+        }
+
+        try {
+            // Clear any loaded content
+            if (!window.isDestroyed()) {
+                await window.webContents.executeJavaScript(`
+                    (() => {
+                        // Clear document
+                        if (document.body) {
+                            document.body.innerHTML = '';
+                        }
+                        
+                        // Clear any timers
+                        const highestTimeoutId = setTimeout(() => {}, 0);
+                        for (let i = 0; i < highestTimeoutId; i++) {
+                            clearTimeout(i);
+                        }
+                        
+                        const highestIntervalId = setInterval(() => {}, 9999);
+                        for (let i = 0; i < highestIntervalId; i++) {
+                            clearInterval(i);
+                        }
+                        
+                        // Clear console
+                        console.clear();
+                    })()
+                `).catch(err => {
+                    if (!window.isDestroyed()) {
+                        Logger.error(`[WindowPool] Error during window cleanup: ${err}`);
+                    }
+                });
+            }
+
+            // Load blank page to reset state
+            if (!window.isDestroyed()) {
+                await window.loadURL('about:blank').catch(err => {
+                    if (!window.isDestroyed()) {
+                        Logger.error(`[WindowPool] Error loading blank page: ${err}`);
+                    }
+                });
+            }
+        } catch (error) {
+            if (!window.isDestroyed()) {
+                Logger.error(`[WindowPool] Error cleaning up window: ${error}`);
+            }
+            throw error;
+        }
+    }
+
+    /**
+     * Periodic cleanup to maintain pool health
+     */
+    private startPeriodicCleanup(): void {
+        if (this.cleanupInterval) {
+            return;
+        }
+
+        this.cleanupInterval = setInterval(async () => {
+            Logger.log('[WindowPool] Running periodic cleanup...');
+
+            const now = Date.now();
+            const windowsToRotate: PooledWindow[] = [];
+
+            // Find windows that need rotation and are not in use
+            for (const pooledWindow of this.pool) {
+                if (!pooledWindow.inUse && this.shouldRotateWindow(pooledWindow)) {
+                    windowsToRotate.push(pooledWindow);
+                }
+            }
+
+            // Rotate windows
+            for (const pooledWindow of windowsToRotate) {
+                await this.rotateWindow(pooledWindow);
+            }
+
+            // Remove destroyed windows
+            const destroyedWindows = this.pool.filter(pw => pw.window.isDestroyed());
+            for (const pooledWindow of destroyedWindows) {
+                this.removeWindowFromPool(pooledWindow.id);
+            }
+
+            // Ensure we maintain minimum pool size (respect creation lock)
+            while (this.pool.length < this.config.poolSize && !this.creatingWindow) {
+                this.creatingWindow = true;
+                try {
+                    // Double-check after acquiring lock
+                    if (this.pool.length < this.config.poolSize) {
+                        await this.createPooledWindow();
+                    }
+                } finally {
+                    this.creatingWindow = false;
+                }
+            }
+
+            Logger.log(`[WindowPool] Periodic cleanup complete. Pool size: ${this.pool.length}, In use: ${this.pool.filter(pw => pw.inUse).length}`);
+        }, this.config.cleanupInterval);
+    }
+
+    /**
+     * Get pool statistics
+     */
+    public getStats(): {
+        poolSize: number;
+        inUse: number;
+        available: number;
+        maxConcurrency: number;
+        windows: Array<{
+            id: string;
+            inUse: boolean;
+            age: number;
+            usageCount: number;
+        }>;
+    } {
+        return {
+            poolSize: this.pool.length,
+            inUse: this.pool.filter(pw => pw.inUse).length,
+            available: this.pool.filter(pw => !pw.inUse).length,
+            maxConcurrency: this.config.maxConcurrency,
+            windows: this.pool.map(pw => ({
+                id: pw.id,
+                inUse: pw.inUse,
+                age: Date.now() - pw.createdAt,
+                usageCount: pw.usageCount
+            }))
+        };
+    }
+
+    /**
+     * Shutdown the pool and cleanup all resources
+     */
+    public async shutdown(): Promise<void> {
+        Logger.log('[WindowPool] Shutting down...');
+
+        // Stop periodic cleanup
+        if (this.cleanupInterval) {
+            clearInterval(this.cleanupInterval);
+            this.cleanupInterval = null;
+        }
+
+        // Destroy all windows and release their network resources
+        for (const pooledWindow of this.pool) {
+            if (!pooledWindow.window.isDestroyed()) {
+                pooledWindow.window.destroy();
+            }
+            pooledWindow.session.closeAllConnections().catch(() => { /* best effort */ });
+        }
+
+        this.pool = [];
+        // Reset slot availability so a later initialize() can allocate again.
+        // sessionInitializedSlots is intentionally NOT reset: fromPartition sessions
+        // are cached for the process lifetime and keep their one-time handlers, so
+        // re-attaching would leak listeners.
+        this.freeSlots = [];
+        this.initialized = false;
+
+        Logger.log('[WindowPool] Shutdown complete');
+    }
+}
+
+// Export singleton getter
+export const getWindowPool = (config?: Partial<WindowPoolConfig>) => WindowPool.getInstance(config);

@@ -1,0 +1,203 @@
+import { getOrGenerateIdentifier } from "./utils/identity-helpers";
+import { Logger } from "./logger/logger";
+import { WebSocketManager } from "./websockets";
+import { getLocalStorage, setLocalStorage } from "./storage/storage-helpers";
+import {
+  getTotalRequestCount,
+  getDailyRequestCount,
+  getRequestCounts,
+  getRequestCountForDate,
+  getDailyRequestsHistory,
+  getRequestCountsInRange
+} from "./storage/request-counter";
+import { BrowserWindow } from 'electron'
+import { showConsentSettings } from "./consent/consent-setttings";
+import { showConsentDialog } from "./consent/consent-dialog";
+
+// Export app setup utility for command-line flags
+export { setupMellowtelApp } from "./utils/app-setup";
+
+const OPT_IN_STATUS_KEY = "mellowtel_opt_in_status";
+
+interface MellowtelOptions {
+  disableLogs: boolean
+}
+
+export default class Mellowtel {
+  private configurationKey: string;
+  private nodeId: string;
+  private options?: MellowtelOptions;
+  private disableLogs: boolean = true;
+  private wsManager: WebSocketManager = WebSocketManager.getInstance();
+
+  /**
+   * Creates an instance of MellowtelSDK.
+   * @param configurationKey - Your configuration key for the SDK received via email.
+   * @param options - Optional configuration options.
+   */
+  constructor(configurationKey: string, options?: MellowtelOptions) {
+    this.configurationKey = configurationKey;
+    this.options = options;
+    this.disableLogs = options?.disableLogs !== undefined ? options.disableLogs : true;
+    Logger.disableLogs = this.disableLogs;
+    this.nodeId = getOrGenerateIdentifier(configurationKey);
+    Logger.log(this.nodeId);
+  }
+
+  /**
+   * Signals Mellowtel to start operating if consent is provided.
+   * 
+   * @returns Promise<void>
+   * @throws Error if the configuration key is empty.
+   */
+  public async init(): Promise<void> {
+    if (!this.configurationKey) {
+      throw new Error("configurationKey is undefined, null, or empty");
+    }
+
+    if (!this.getOptInStatus()) {
+      Logger.log("User is not opted in. WebSocket connection will not be established.");
+      return;
+    }
+
+    await this.wsManager.initialize(this.nodeId);
+    Logger.log("Mellowtel initialized");
+  }
+
+  /**
+   * Requests user consent by showing a dialog explaining 
+   * about Mellowtel and the incentive for providing consent.
+   * 
+   * Only shown once until consent has been provided or denied.
+   * 
+   * @param window - The Electron BrowserWindow instance.
+   * @param incentive - The incentive to show in the consent dialog.
+   * @returns Promise<boolean | undefined> - Returns true if the user provided consent, false if denied, and undefined if consent was already provided.
+   */
+  public async requestConsent(
+    window: BrowserWindow,
+    incentive: string,
+  ): Promise<boolean | undefined> {
+    if (getLocalStorage(OPT_IN_STATUS_KEY) == undefined) {
+      let result = await showConsentDialog({
+        incentive: incentive,
+        acceptButtonText: "Yes, accept",
+        declineButtonText: "Later",
+        parentWindow: window!
+      });
+
+      setLocalStorage(OPT_IN_STATUS_KEY, result);
+      return result;
+    } else {
+      Logger.log("Consent already provided");
+      return undefined;
+    }
+  }
+
+  /**
+   * Shows the consent settings dialog for the user to manage their consent.
+   * 
+   * @param window - The Electron BrowserWindow instance.
+   * @returns Promise<void>
+   */
+  public async showConsentSettings(window: BrowserWindow): Promise<void> {
+    await showConsentSettings({
+      initiallyOptedIn: this.getOptInStatus() ?? false,
+      nodeId: this.nodeId,
+      parentWindow: window,
+      onOptIn: async () => {
+        await this.optIn();
+        await this.wsManager.initialize(this.nodeId);
+      },
+      onOptOut: async () => {
+        await this.optOut();
+      }
+    });
+  }
+
+  /**
+   * Gets the current opt-in status.
+   * @returns boolean | undefined - Returns true if the user is opted in, false if not and undefined if user hasn't decided yet.
+   */
+  public getOptInStatus(): boolean | undefined {
+    const status = getLocalStorage(OPT_IN_STATUS_KEY);
+    return status;
+  }
+
+  /**
+   * Returns the mellowtel node id
+   */
+  public getNodeId(): string {
+    return this.nodeId;
+  }
+
+  /**
+   * Manually opts in the user to the service from your own interface.
+   * @returns Promise<void>
+   */
+  public async optIn(): Promise<void> {
+    setLocalStorage(OPT_IN_STATUS_KEY, true);
+    Logger.log("User opted in");
+  }
+
+  /**
+   * Manually opts out the user from the service from your own interface. Disconnects WebSocket if connected.
+   * @returns Promise<void>
+   */
+  public async optOut(): Promise<void> {
+    setLocalStorage(OPT_IN_STATUS_KEY, false);
+    this.wsManager.disconnect();
+    Logger.log("User opted out");
+  }
+
+  /**
+   * Gets the total number of requests processed since installation.
+   * @returns number - The total request count
+   */
+  public getTotalRequestCount(): number {
+    return getTotalRequestCount();
+  }
+
+  /**
+   * Gets the number of requests processed today.
+   * @returns number - The daily request count for today
+   */
+  public getDailyRequestCount(): number {
+    return getDailyRequestCount();
+  }
+
+  /**
+   * Gets the number of requests processed on a specific date.
+   * @param date - The date in YYYY-MM-DD format (e.g., "2025-10-29")
+   * @returns number - The request count for that date
+   */
+  public getRequestCountForDate(date: string): number {
+    return getRequestCountForDate(date);
+  }
+
+  /**
+   * Gets all historical daily request counts.
+   * @returns Object with dates as keys (YYYY-MM-DD) and request counts as values
+   */
+  public getDailyRequestsHistory(): { [date: string]: number } {
+    return getDailyRequestsHistory();
+  }
+
+  /**
+   * Gets request counts for a specific date range.
+   * @param startDate - Start date in YYYY-MM-DD format
+   * @param endDate - End date in YYYY-MM-DD format
+   * @returns Object with dates as keys and request counts as values for the specified range
+   */
+  public getRequestCountsInRange(startDate: string, endDate: string): { [date: string]: number } {
+    return getRequestCountsInRange(startDate, endDate);
+  }
+
+  /**
+   * Gets detailed request count information including total, daily (today), and complete history.
+   * @returns Object containing total requests, daily requests for today, and all historical daily counts
+   */
+  public getRequestCounts(): { total: number; daily: number; dailyHistory: { [date: string]: number } } {
+    return getRequestCounts();
+  }
+}

@@ -1,0 +1,37 @@
+name: Publish to npm
+
+# Publishing is a deliberate act, so it runs only when you cut a GitHub Release
+# (tag it, hit "Publish release") or trigger it by hand from the Actions tab.
+# It never fires on a normal push to main.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write        # required for npm provenance (--provenance)
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"   # writes an .npmrc that reads NODE_AUTH_TOKEN
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build
+        run: npm run build
+
+      # Publishes the public package. `prepublishOnly` also builds, so dist is
+      # always fresh. --provenance attaches a signed build attestation (needs a
+      # public repo + the id-token permission above).
+      - name: Publish
+        run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
