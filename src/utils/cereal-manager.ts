@@ -32,6 +32,7 @@ export class CerealManager {
     private hostWindows: HostWindowInfo[] = [];
     private initialized: boolean = false;
     private cleanupInterval: NodeJS.Timeout | null = null;
+    private shuttingDown: boolean = false;
 
     private constructor() {}
 
@@ -43,9 +44,20 @@ export class CerealManager {
     }
 
     /**
+     * Allow lazy initialization again after a previous shutdown.
+     */
+    public resume(): void {
+        this.shuttingDown = false;
+    }
+
+    /**
      * Initialize persistent host windows with cereal app loaded
      */
     public async initialize(): Promise<void> {
+        if (this.shuttingDown) {
+            throw new Error('[CerealManager] Cannot initialize while shut down');
+        }
+
         if (this.initialized) {
             Logger.log('[CerealManager] Already initialized');
             return;
@@ -55,6 +67,10 @@ export class CerealManager {
         Logger.log(`[CerealManager] Cereal app URL: ${CEREAL_APP_URL}`);
 
         for (let i = 0; i < NUM_HOST_WINDOWS; i++) {
+            if (this.shuttingDown) {
+                throw new Error('[CerealManager] Initialization cancelled during shutdown');
+            }
+
             const win = new BrowserWindow({
                 show: false,
                 webPreferences: {
@@ -106,6 +122,13 @@ export class CerealManager {
                 win.loadURL(CEREAL_APP_URL);
             });
 
+            if (this.shuttingDown) {
+                if (!win.isDestroyed()) {
+                    win.destroy();
+                }
+                throw new Error('[CerealManager] Initialization cancelled during shutdown');
+            }
+
             this.hostWindows.push({
                 window: win,
                 activeJobs: 0,
@@ -131,6 +154,10 @@ export class CerealManager {
         recordID: string,
         htmlContent: string
     ): Promise<any> {
+        if (this.shuttingDown) {
+            throw new Error('[CerealManager] Cannot accept work while shut down');
+        }
+
         if (!this.initialized) {
             Logger.log('[CerealManager] Not initialized, initializing now...');
             await this.initialize();
@@ -237,6 +264,10 @@ export class CerealManager {
      * Rotate a window by destroying it and creating a fresh replacement
      */
     private async rotateWindow(hostInfo: HostWindowInfo): Promise<void> {
+        if (this.shuttingDown) {
+            return;
+        }
+
         const windowIndex = hostInfo.index;
         Logger.log(`[CerealManager] Rotating window ${windowIndex}...`);
 
@@ -298,6 +329,13 @@ export class CerealManager {
                 newWin.loadURL(CEREAL_APP_URL);
             });
 
+            if (this.shuttingDown) {
+                if (!newWin.isDestroyed()) {
+                    newWin.destroy();
+                }
+                return;
+            }
+
             // Update the host info with new window
             hostInfo.window = newWin;
             hostInfo.initializationTime = Date.now();
@@ -322,17 +360,18 @@ export class CerealManager {
         cerealObject: string
     ): Promise<any> {
         const timeout = 30000; // 30 seconds
+        let responseListener: ((event: any, level: number, message: string) => void) | undefined;
+        let timeoutId: NodeJS.Timeout | undefined;
 
         const mainWork = new Promise((resolve, reject) => {
             // Setup message listener for cereal response
-            const responseListener = (event: any, level: number, message: string) => {
+            responseListener = (event: any, level: number, message: string) => {
                 const prefix = 'CEREAL_RESPONSE::';
                 if (message.startsWith(prefix)) {
                     try {
                         const response = JSON.parse(message.substring(prefix.length));
                         if (response.recordID === recordID) {
                             Logger.log(`[CerealManager] Received result for ${recordID}`);
-                            hostWindow.webContents.removeListener('console-message', responseListener);
                             resolve(response.json);
                         }
                     } catch (e) {
@@ -367,12 +406,21 @@ export class CerealManager {
         });
 
         const timeoutPromise = new Promise((_, reject) => {
-            setTimeout(() => {
+            timeoutId = setTimeout(() => {
                 reject(new Error(`Cereal process timed out after ${timeout}ms for ${recordID}`));
             }, timeout);
         });
 
-        return Promise.race([mainWork, timeoutPromise]);
+        try {
+            return await Promise.race([mainWork, timeoutPromise]);
+        } finally {
+            if (timeoutId) {
+                clearTimeout(timeoutId);
+            }
+            if (responseListener && !hostWindow.isDestroyed()) {
+                hostWindow.webContents.removeListener('console-message', responseListener);
+            }
+        }
     }
 
     /**
@@ -409,6 +457,10 @@ export class CerealManager {
         }
 
         this.cleanupInterval = setInterval(async () => {
+            if (this.shuttingDown) {
+                return;
+            }
+
             try {
                 // Only clean up when no jobs are running
                 const totalActiveJobs = this.hostWindows.reduce((sum, info) => sum + info.activeJobs, 0);
@@ -480,6 +532,8 @@ export class CerealManager {
      */
     public async shutdown(): Promise<void> {
         Logger.log('[CerealManager] Shutting down...');
+        this.shuttingDown = true;
+        this.initialized = false;
 
         // Stop periodic cleanup
         if (this.cleanupInterval) {
@@ -495,7 +549,6 @@ export class CerealManager {
         }
 
         this.hostWindows = [];
-        this.initialized = false;
 
         Logger.log('[CerealManager] Shutdown complete');
     }

@@ -103,6 +103,8 @@ export class WindowPool {
     private cleanupInterval: NodeJS.Timeout | null = null;
     private initialized: boolean = false;
     private creatingWindow: boolean = false; // Lock to prevent concurrent window creation
+    private shuttingDown: boolean = false;
+    private crashHandlersInitialized: boolean = false;
     // Fixed set of session slots. Each live window owns one slot; its session is
     // session.fromPartition(`mellowtel-pool-slot-<slot>`). Reusing a bounded set of
     // partition names caps the number of Electron sessions (and their network
@@ -125,9 +127,20 @@ export class WindowPool {
     }
 
     /**
+     * Allow lazy initialization again after a previous shutdown.
+     */
+    public resume(): void {
+        this.shuttingDown = false;
+    }
+
+    /**
      * Initialize the window pool
      */
     public async initialize(): Promise<void> {
+        if (this.shuttingDown) {
+            throw new Error('[WindowPool] Cannot initialize while shut down');
+        }
+
         if (this.initialized) {
             Logger.log('[WindowPool] Already initialized');
             return;
@@ -161,6 +174,11 @@ export class WindowPool {
      * Set up app-level crash handlers to prevent system dialogs
      */
     private setupCrashHandlers(): void {
+        if (this.crashHandlersInitialized) {
+            return;
+        }
+        this.crashHandlersInitialized = true;
+
         // Handle child process crashes silently
         app.on('child-process-gone', (_event, details) => {
             Logger.log(`[WindowPool] Child process gone: ${details.type} - ${details.reason}`);
@@ -273,6 +291,10 @@ export class WindowPool {
      * source of the handle/port leak.
      */
     private async createPooledWindow(): Promise<PooledWindow> {
+        if (this.shuttingDown) {
+            throw new Error('[WindowPool] Window creation cancelled during shutdown');
+        }
+
         // Reserve a slot synchronously (before any await) so two concurrent
         // creations can never grab the same slot / session.
         const slot = this.acquireSlot();
@@ -476,6 +498,10 @@ export class WindowPool {
             needsRotation: false
         };
 
+        if (this.shuttingDown) {
+            throw new Error('[WindowPool] Window creation cancelled during shutdown');
+        }
+
         this.pool.push(pooledWindow);
         Logger.log(`[WindowPool] Created window ${windowId} on slot ${slot}. Pool size: ${this.pool.length}`);
 
@@ -495,6 +521,10 @@ export class WindowPool {
      * Acquire a window from the pool with timeout
      */
     private async acquireWindow(startTime: number = Date.now()): Promise<PooledWindow> {
+        if (this.shuttingDown) {
+            throw new Error('[WindowPool] Cannot acquire a window while shut down');
+        }
+
         if (!this.initialized) {
             await this.initialize();
         }
@@ -583,11 +613,19 @@ export class WindowPool {
      * Release a window back to the pool
      */
     private async releaseWindow(pooledWindow: PooledWindow): Promise<void> {
+        if (this.shuttingDown) {
+            if (!pooledWindow.window.isDestroyed()) {
+                pooledWindow.window.destroy();
+            }
+            this.removeWindowFromPool(pooledWindow.id);
+            return;
+        }
+
         if (pooledWindow.window.isDestroyed()) {
             Logger.log(`[WindowPool] Window ${pooledWindow.id} was destroyed, removing from pool`);
             this.removeWindowFromPool(pooledWindow.id);
             // Create a replacement window to maintain pool size
-            if (this.pool.length < this.config.poolSize && !this.creatingWindow) {
+            if (!this.shuttingDown && this.pool.length < this.config.poolSize && !this.creatingWindow) {
                 this.creatingWindow = true;
                 try {
                     await this.createPooledWindow();
@@ -630,6 +668,10 @@ export class WindowPool {
     public async executeWithWindow<T>(
         task: (window: BrowserWindow) => Promise<T>
     ): Promise<T> {
+        if (this.shuttingDown) {
+            throw new Error('[WindowPool] Cannot accept work while shut down');
+        }
+
         // Ensure pool is initialized before using this.limit
         if (!this.initialized) {
             await this.initialize();
@@ -653,7 +695,7 @@ export class WindowPool {
                     this.removeWindowFromPool(pooledWindow.id);
                     
                     // Create replacement window to maintain pool size
-                    if (this.pool.length < this.config.poolSize && !this.creatingWindow) {
+                    if (!this.shuttingDown && this.pool.length < this.config.poolSize && !this.creatingWindow) {
                         this.creatingWindow = true;
                         this.createPooledWindow().finally(() => {
                             this.creatingWindow = false;
@@ -684,7 +726,7 @@ export class WindowPool {
                 this.removeWindowFromPool(pooledWindow.id);
                 
                 // Create replacement window to maintain pool size
-                if (this.pool.length < this.config.poolSize && !this.creatingWindow) {
+                if (!this.shuttingDown && this.pool.length < this.config.poolSize && !this.creatingWindow) {
                     this.creatingWindow = true;
                     this.createPooledWindow().finally(() => {
                         this.creatingWindow = false;
@@ -716,6 +758,10 @@ export class WindowPool {
      * Only call this when the window is NOT in use
      */
     private async rotateWindow(pooledWindow: PooledWindow): Promise<void> {
+        if (this.shuttingDown) {
+            return;
+        }
+
         // Safety check: never rotate a window that's in use
         if (pooledWindow.inUse) {
             Logger.error(`[WindowPool] Attempted to rotate window ${pooledWindow.id} while in use - skipping`);
@@ -741,7 +787,9 @@ export class WindowPool {
         this.releaseSlot(pooledWindow.slot);
 
         // Create new window
-        await this.createPooledWindow();
+        if (!this.shuttingDown) {
+            await this.createPooledWindow();
+        }
 
         Logger.log(`[WindowPool] Window rotation complete`);
     }
@@ -827,6 +875,10 @@ export class WindowPool {
         }
 
         this.cleanupInterval = setInterval(async () => {
+            if (this.shuttingDown) {
+                return;
+            }
+
             Logger.log('[WindowPool] Running periodic cleanup...');
 
             const now = Date.now();
@@ -851,11 +903,11 @@ export class WindowPool {
             }
 
             // Ensure we maintain minimum pool size (respect creation lock)
-            while (this.pool.length < this.config.poolSize && !this.creatingWindow) {
+            while (!this.shuttingDown && this.pool.length < this.config.poolSize && !this.creatingWindow) {
                 this.creatingWindow = true;
                 try {
                     // Double-check after acquiring lock
-                    if (this.pool.length < this.config.poolSize) {
+                    if (!this.shuttingDown && this.pool.length < this.config.poolSize) {
                         await this.createPooledWindow();
                     }
                 } finally {
@@ -901,6 +953,8 @@ export class WindowPool {
      */
     public async shutdown(): Promise<void> {
         Logger.log('[WindowPool] Shutting down...');
+        this.shuttingDown = true;
+        this.initialized = false;
 
         // Stop periodic cleanup
         if (this.cleanupInterval) {
@@ -922,8 +976,6 @@ export class WindowPool {
         // are cached for the process lifetime and keep their one-time handlers, so
         // re-attaching would leak listeners.
         this.freeSlots = [];
-        this.initialized = false;
-
         Logger.log('[WindowPool] Shutdown complete');
     }
 }

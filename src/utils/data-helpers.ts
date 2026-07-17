@@ -148,14 +148,16 @@ export async function processHtmlContent(htmlString: string, dataRequest: DataRe
     
     return windowPool.executeWithWindow(async (win: BrowserWindow) => {
         // Create a 60-second timeout promise
+        let timeoutId: NodeJS.Timeout | undefined;
         const timeoutPromise = new Promise<never>((_, reject) => {
-            setTimeout(() => {
+            timeoutId = setTimeout(() => {
                 reject(new Error(`[processHtmlContent] Timeout: HTML processing exceeded 60 seconds`));
             }, 60000);
         });
 
         // Race between the actual processing and the timeout
-        return Promise.race([
+        try {
+            return await Promise.race([
             (async () => {
                 // Resize window if needed
                 if (dataRequest.windowSize.width || dataRequest.windowSize.height) {
@@ -272,8 +274,13 @@ export async function processHtmlContent(htmlString: string, dataRequest: DataRe
                     };
                 }
             })(),
-            timeoutPromise
-        ]);
+                timeoutPromise
+            ]);
+        } finally {
+            if (timeoutId) {
+                clearTimeout(timeoutId);
+            }
+        }
     });
 }
 
@@ -282,14 +289,16 @@ export async function processUrl(dataRequest: DataRequest): Promise<{ html: stri
     
     return windowPool.executeWithWindow(async (win: BrowserWindow) => {
         // Create a 60-second timeout promise
+        let timeoutId: NodeJS.Timeout | undefined;
         const timeoutPromise = new Promise<never>((_, reject) => {
-            setTimeout(() => {
+            timeoutId = setTimeout(() => {
                 reject(new Error(`[processUrl] Timeout: URL processing exceeded 60 seconds for ${dataRequest.url}`));
             }, 60000);
         });
 
         // Race between the actual processing and the timeout
-        return Promise.race([
+        try {
+            return await Promise.race([
             (async () => {
                 // Resize window if needed
                 if (dataRequest.windowSize.width || dataRequest.windowSize.height) {
@@ -603,8 +612,13 @@ export async function processUrl(dataRequest: DataRequest): Promise<{ html: stri
                     throw error;
                 }
             })(),
-            timeoutPromise
-        ]);
+                timeoutPromise
+            ]);
+        } finally {
+            if (timeoutId) {
+                clearTimeout(timeoutId);
+            }
+        }
     });
 }
 

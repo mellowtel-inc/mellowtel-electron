@@ -4,6 +4,7 @@ import { Logger } from './logger/logger';
 import { VERSION } from './constants';
 import { makeFetchRequest, processUrl, processHtmlContent } from './utils/data-helpers';
 import { getCerealManager } from './utils/cereal-manager';
+import { getWindowPool } from './utils/window-pool';
 import { getS3SignedUrls, uploadToS3, saveCrawl } from './utils/put-to-signed';
 import { DataRequest } from './utils/data-request';
 import { incrementRequestCount } from './storage/request-counter';
@@ -22,6 +23,7 @@ export class WebSocketManager {
     private pingInterval: NodeJS.Timeout | null = null;
     private pongTimeout: NodeJS.Timeout | null = null;
     private healthCheckInterval: NodeJS.Timeout | null = null;
+    private reconnectTimeout: NodeJS.Timeout | null = null;
     private readonly pingIntervalTime: number = 60000; // 60 seconds
     private readonly pongTimeoutTime: number = 5000; // receive pong back in < 5 seconds
     private readonly healthCheckIntervalTime: number = 15 * 60 * 1000; // 15 minutes
@@ -41,6 +43,9 @@ export class WebSocketManager {
 
     public async initialize(identifier: string): Promise<boolean> {
         this.identifier = identifier;
+        this.isVoluntarilyDisconnected = false;
+        getWindowPool().resume();
+        getCerealManager().resume();
 
         if (this.ws !== null) {
             Logger.log("[WebSocketManager]: WebSocket is already connected");
@@ -305,7 +310,7 @@ export class WebSocketManager {
 
     private async handleRateLimitReached(): Promise<void> {
         Logger.log("[WebSocketManager]: Rate limit reached, closing connection...");
-        this.disconnect();
+        await this.shutdown();
     }
 
     private async reconnect(): Promise<void> {
@@ -317,8 +322,11 @@ export class WebSocketManager {
         if (this.reconnectAttempts < this.maxReconnectAttempts) {
             this.reconnectAttempts++;
             Logger.log(`[WebSocketManager]: Attempting to reconnect (${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
-            setTimeout(() => {
-                this.initialize(this.identifier);
+            this.reconnectTimeout = setTimeout(() => {
+                this.reconnectTimeout = null;
+                if (!this.isVoluntarilyDisconnected) {
+                    this.initialize(this.identifier);
+                }
             }, this.reconnectDelay);
         }
     }
@@ -336,11 +344,26 @@ export class WebSocketManager {
         Logger.log("[WebSocketManager]: Voluntarily disconnecting...");
         this.isVoluntarilyDisconnected = true;
         this.reconnectAttempts = -1;
+        if (this.reconnectTimeout) {
+            clearTimeout(this.reconnectTimeout);
+            this.reconnectTimeout = null;
+        }
         this.stopPing();
         this.stopHealthCheck();
         if (this.ws) {
             this.ws.close();
             this.ws = null;
         }
+    }
+
+    /**
+     * Disconnect and release all request-processing resources.
+     */
+    public async shutdown(): Promise<void> {
+        this.disconnect();
+        await Promise.all([
+            getWindowPool().shutdown(),
+            getCerealManager().shutdown()
+        ]);
     }
 }
