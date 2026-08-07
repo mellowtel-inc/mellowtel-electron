@@ -146,8 +146,17 @@ export default class Mellowtel {
    */
   public async optOut(): Promise<void> {
     setLocalStorage(OPT_IN_STATUS_KEY, false);
-    this.wsManager.disconnect();
+    await this.shutdown();
     Logger.log("User opted out");
+  }
+
+  /**
+   * Stops Mellowtel and releases all background resources without changing
+   * the user's opt-in preference. Call this when the host app is closing.
+   */
+  public async shutdown(): Promise<void> {
+    await this.wsManager.shutdown();
+    Logger.log("Mellowtel shut down");
   }
 
   /**

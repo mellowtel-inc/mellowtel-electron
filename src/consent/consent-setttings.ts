@@ -86,7 +86,7 @@ function getInformationText(state: ContainerState): string {
         case ContainerState.OPTED_IN:
             return "Mellowtel is an open-source library that lets you share your unused internet with companies that use it to access the web. The developer of this app gets a share of the revenue. It helps maintain this app free and available for everyone. Mellowtel shares your bandwidth only. Security and privacy are 100% guaranteed. It doesn't collect, share, or sell personal information (not even anonymized data)."
         case ContainerState.OPTED_OUT:
-            return 'You are currently opted out. To support this app, please consider opting in.';
+            return 'You are currently opted out. By opting in, Mellowtel lets you share your unused internet with companies that use it to access the web. The developer of this app gets a share of the revenue. It helps maintain this app free and available for everyone.\n\nMellowtel shares your bandwidth only. Security and privacy are 100% guaranteed. It doesn\'t collect, share, or sell personal information (not even anonymized data).';
 
         case ContainerState.CONFIRM_OPT_OUT:
             return 'Mellowtel is used by hundreds of thousands of users around the world. By remaining opted in, you will join this growing network of users. Security, privacy and speed of browsing are 100% guaranteed.\n\nOpting-out might negatively affect the quality of the service offered by this app. Please consider staying opted-in to keep your incentives available.';
