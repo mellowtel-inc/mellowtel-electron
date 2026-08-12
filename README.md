@@ -167,7 +167,7 @@ The package is published to the **public npm registry** as [`mellowtel-electron`
 
 ### Automated publishing (recommended)
 
-1. Bump the `version` in `package.json` and merge it to `main`.
+1. Bump the `version` in `package.json` **and** the `VERSION` constant in `src/constants.ts` (used in the websocket connection) to the same value, then merge to `main`.
 2. On GitHub, go to **Releases → Draft a new release**, create a tag (e.g. `v1.0.1`), and click **Publish release**.
 3. The [`Publish to npm`](.github/workflows/publish.yml) workflow builds and runs `npm publish` automatically. You can also trigger it manually from the **Actions** tab ("Run workflow").
 
