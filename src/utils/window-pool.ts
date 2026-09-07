@@ -33,11 +33,11 @@ function getDialogBlockPreloadPath(): string {
 
 /**
  * Window Pool Manager
- * 
+ *
  * Manages a pool of reusable BrowserWindows to prevent unbounded window creation.
  * Key features:
- * 1. Pool of reusable windows (default: 10 windows)
- * 2. Concurrency control (max 5-10 concurrent operations)
+ * 1. Pool of reusable windows (default: 2 windows - see DEFAULT_MAX_WINDOWS)
+ * 2. Concurrency control, overridable per request (DataRequest.maxWindows)
  * 3. Automatic cleanup and window recycling
  * 4. Memory leak prevention
  * 5. Window health monitoring and rotation
@@ -55,7 +55,7 @@ interface PooledWindow {
     needsRotation: boolean; // Flag to mark window for rotation when it becomes idle
 }
 
-interface WindowPoolConfig {
+export interface WindowPoolConfig {
     poolSize: number;
     maxConcurrency: number;
     maxWindowAge: number; // milliseconds
@@ -63,37 +63,24 @@ interface WindowPoolConfig {
     cleanupInterval: number; // milliseconds
 }
 
-/**
- * Calculate optimal pool size based on available system RAM
- * Each Electron window uses approximately 100-150MB of RAM
- */
-function calculateOptimalPoolSize(): number {
-    try {
-        const totalMemoryGB = os.totalmem() / (1024 * 1024 * 1024);
-
-        // Conservative estimates based on available RAM
-        if (totalMemoryGB < 4) {
-            return 2; // Low RAM devices (< 4GB): 2 windows
-        } else if (totalMemoryGB < 8) {
-            return 3; // Medium RAM devices (4-8GB): 3 windows
-        } else if (totalMemoryGB < 16) {
-            return 5; // Good RAM devices (8-16GB): 5 windows
-        } else {
-            return 8; // High RAM devices (16GB+): 8 windows
-        }
-    } catch {
-        return 4;
-    }
-
-}
+// How many Chromium windows this app may have open for scraping at once.
+// No RAM-based auto-sizing: a single fixed default, overridable per request
+// via DataRequest.maxWindows (see getWindowPool in data-helpers.ts). This is
+// a deliberate throughput ceiling, not a resource limit.
+const DEFAULT_MAX_WINDOWS = 2;
 
 const DEFAULT_CONFIG: WindowPoolConfig = {
-    poolSize: calculateOptimalPoolSize(),
-    maxConcurrency: calculateOptimalPoolSize(), // Match pool size
+    poolSize: DEFAULT_MAX_WINDOWS,
+    maxConcurrency: DEFAULT_MAX_WINDOWS, // Match pool size
     maxWindowAge: 5 * 60 * 1000, // 5 minutes
     maxWindowUsage: 50, // recycle after 50 uses
     cleanupInterval: 2 * 60 * 1000, // 2 minutes
 };
+
+/** A positive integer, or undefined for anything else (including NaN/0/negative). */
+function sanitizePositiveInt(value: unknown): number | undefined {
+    return Number.isInteger(value) && (value as number) > 0 ? (value as number) : undefined;
+}
 
 export class WindowPool {
     private static instance: WindowPool;
@@ -103,6 +90,7 @@ export class WindowPool {
     private cleanupInterval: NodeJS.Timeout | null = null;
     private initialized: boolean = false;
     private creatingWindow: boolean = false; // Lock to prevent concurrent window creation
+    private initializingPromise: Promise<void> | null = null; // Lock to prevent concurrent initialize() calls
     // Fixed set of session slots. Each live window owns one slot; its session is
     // session.fromPartition(`mellowtel-pool-slot-<slot>`). Reusing a bounded set of
     // partition names caps the number of Electron sessions (and their network
@@ -114,18 +102,47 @@ export class WindowPool {
     private sessionInitializedSlots: Set<number> = new Set();
 
     private constructor(config: Partial<WindowPoolConfig> = {}) {
-        this.config = { ...DEFAULT_CONFIG, ...config };
+        const poolSize = sanitizePositiveInt(config.poolSize);
+        const maxConcurrency = sanitizePositiveInt(config.maxConcurrency);
+        this.config = {
+            ...DEFAULT_CONFIG,
+            ...config,
+            ...(poolSize !== undefined ? { poolSize } : {}),
+            ...(maxConcurrency !== undefined ? { maxConcurrency } : {}),
+        };
     }
 
+    // WindowPool is a process-wide singleton, so config only takes effect on
+    // the call that creates it - later calls with a different maxWindows are
+    // logged and otherwise ignored rather than silently resizing a pool that
+    // already has windows and sessions live. This mirrors how the RAM-based
+    // sizing this replaced also only ever ran once, at first init.
     public static getInstance(config?: Partial<WindowPoolConfig>): WindowPool {
         if (!WindowPool.instance) {
             WindowPool.instance = new WindowPool(config);
+            return WindowPool.instance;
+        }
+        if (config?.poolSize !== undefined || config?.maxConcurrency !== undefined) {
+            const { poolSize, maxConcurrency } = WindowPool.instance.config;
+            if (config.poolSize !== poolSize || config.maxConcurrency !== maxConcurrency) {
+                Logger.log(
+                    `[WindowPool] Already initialized with maxWindows=${maxConcurrency}; ` +
+                    `ignoring requested override (poolSize=${config.poolSize}, maxConcurrency=${config.maxConcurrency}) for this call.`
+                );
+            }
         }
         return WindowPool.instance;
     }
 
     /**
-     * Initialize the window pool
+     * Initialize the window pool.
+     *
+     * Concurrent callers (e.g. two jobs racing on a cold pool, since both
+     * acquireWindow() and executeWithWindow() check `!this.initialized` and
+     * then call this) must share one in-flight promise rather than each
+     * running the window/slot creation sequence independently - that
+     * previously corrupted slot accounting and crashed with "No free session
+     * slot available".
      */
     public async initialize(): Promise<void> {
         if (this.initialized) {
@@ -133,6 +150,17 @@ export class WindowPool {
             return;
         }
 
+        if (this.initializingPromise) {
+            return this.initializingPromise;
+        }
+
+        this.initializingPromise = this.doInitialize().finally(() => {
+            this.initializingPromise = null;
+        });
+        return this.initializingPromise;
+    }
+
+    private async doInitialize(): Promise<void> {
         Logger.log(`[WindowPool] Initializing pool with ${this.config.poolSize} windows, max concurrency: ${this.config.maxConcurrency}`);
 
         // Set up app-level crash handlers to prevent dialogs
@@ -930,3 +958,15 @@ export class WindowPool {
 
 // Export singleton getter
 export const getWindowPool = (config?: Partial<WindowPoolConfig>) => WindowPool.getInstance(config);
+
+/**
+ * Builds the {poolSize, maxConcurrency} override for getWindowPool() from a
+ * request's maxWindows field, or undefined when it's absent/invalid - callers
+ * don't need to validate it themselves. See DataRequest.maxWindows and
+ * WindowPool.getInstance for how a value from a later request is handled once
+ * the pool already exists.
+ */
+export function windowPoolConfigFor(dataRequest: { maxWindows?: number }): Partial<WindowPoolConfig> | undefined {
+    const maxWindows = sanitizePositiveInt(dataRequest.maxWindows);
+    return maxWindows !== undefined ? { poolSize: maxWindows, maxConcurrency: maxWindows } : undefined;
+}

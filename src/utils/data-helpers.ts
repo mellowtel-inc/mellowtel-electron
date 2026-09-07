@@ -2,7 +2,7 @@ import { BrowserWindow, session } from 'electron';
 import { Logger } from '../logger/logger';
 import TurndownService from 'turndown';
 import { Action, FormField, DataRequest } from './data-request';
-import { getWindowPool } from './window-pool';
+import { getWindowPool, windowPoolConfigFor } from './window-pool';
 import sharp from 'sharp';
 import * as os from 'os';
 
@@ -144,7 +144,7 @@ async function executeAction(action: Action, win: BrowserWindow): Promise<void> 
 }
 
 export async function processHtmlContent(htmlString: string, dataRequest: DataRequest): Promise<{ html: string; markdown: string; screenshot: Buffer | undefined; contentType: string | undefined }> {
-    const windowPool = getWindowPool();
+    const windowPool = getWindowPool(windowPoolConfigFor(dataRequest));
     
     return windowPool.executeWithWindow(async (win: BrowserWindow) => {
         // Create a 60-second timeout promise
@@ -278,7 +278,7 @@ export async function processHtmlContent(htmlString: string, dataRequest: DataRe
 }
 
 export async function processUrl(dataRequest: DataRequest): Promise<{ html: string, markdown: string, screenshot: Buffer | undefined, contentType: string | undefined }> {
-    const windowPool = getWindowPool();
+    const windowPool = getWindowPool(windowPoolConfigFor(dataRequest));
     
     return windowPool.executeWithWindow(async (win: BrowserWindow) => {
         // Create a 60-second timeout promise
