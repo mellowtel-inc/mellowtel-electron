@@ -95,6 +95,14 @@ const DEFAULT_CONFIG: WindowPoolConfig = {
     cleanupInterval: 2 * 60 * 1000, // 2 minutes
 };
 
+// Debugging aid only: set MELLOWTEL_DEBUG_VISIBLE=1 to make pooled windows
+// real, on-screen, focusable windows instead of permanently hidden ones, so a
+// developer can watch a job run. Never set in production - this defeats the
+// whole point of the pool being invisible.
+function isDebugVisible(): boolean {
+    return ['1', 'true'].includes((process.env.MELLOWTEL_DEBUG_VISIBLE ?? '').toLowerCase());
+}
+
 export class WindowPool {
     private static instance: WindowPool;
     private pool: PooledWindow[] = [];
@@ -325,15 +333,28 @@ export class WindowPool {
 
             const uniqueSession = slotSession;
 
+        const debugVisible = isDebugVisible();
         const win = new BrowserWindow({
-            show: false,
+            show: debugVisible,
             width: 1709,
             height: 984,
-            x: -10000,                  // Position off-screen as failsafe
-            y: -10000,
-            focusable: false,           // Prevent focus stealing
+            ...(debugVisible ? {} : {
+                x: -10000,               // Position off-screen as failsafe
+                y: -10000,
+            }),
+            focusable: debugVisible,     // Prevent focus stealing, except when debugging
             webPreferences: {
-                offscreen: true,
+                // Offscreen rendering is architecturally different from a normal
+                // hidden window (no real compositor surface, different frame
+                // timing/WebGL fingerprint), and Google's AI Overview gating
+                // detects exactly that: with this on, the SERP loads fine but
+                // the Overview itself always comes back declined ("Can't
+                // generate an AI overview right now"). show: false above
+                // already keeps the window invisible via a real (if hidden)
+                // window - nothing here reads paint frames via the
+                // offscreen-only API, so this bought no functional benefit,
+                // only the fingerprint. Verified: 5/5 real Overviews with this
+                // off vs 4/4 declined with it on, all other factors identical.
                 nodeIntegration: false,
                 // Preload must patch the page's window; isolated preload cannot do that.
                 contextIsolation: false,
@@ -442,32 +463,36 @@ export class WindowPool {
         // Ensure window is always muted and can never play sound
         win.webContents.setAudioMuted(true);
 
-        // CRITICAL: Prevent window from ever becoming visible
-        win.on('show', () => {
-            Logger.log(`[WindowPool] Window ${windowId} attempted to show, hiding it`);
-            win.setPosition(-10000, -10000); // Move off-screen immediately
-            win.hide();
-        });
-
-        // Block focus attempts that could make window visible
-        win.on('focus', () => {
-            Logger.log(`[WindowPool] Window ${windowId} attempted to focus, hiding it`);
-            win.blur();
-            win.hide();
-        });
-
-        // Additional safeguard: Monitor and force hide if window becomes visible
-        const visibilityCheck = setInterval(() => {
-            if (win && !win.isDestroyed() && win.isVisible()) {
-                Logger.log(`[WindowPool] Window ${windowId} became visible, hiding it immediately`);
+        if (!debugVisible) {
+            // CRITICAL: Prevent window from ever becoming visible
+            win.on('show', () => {
+                Logger.log(`[WindowPool] Window ${windowId} attempted to show, hiding it`);
+                win.setPosition(-10000, -10000); // Move off-screen immediately
                 win.hide();
-            }
-        }, 100); // Check every 100ms
+            });
 
-        // Clean up interval when window is destroyed
-        win.on('closed', () => {
-            clearInterval(visibilityCheck);
-        });
+            // Block focus attempts that could make window visible
+            win.on('focus', () => {
+                Logger.log(`[WindowPool] Window ${windowId} attempted to focus, hiding it`);
+                win.blur();
+                win.hide();
+            });
+
+            // Additional safeguard: Monitor and force hide if window becomes visible
+            const visibilityCheck = setInterval(() => {
+                if (win && !win.isDestroyed() && win.isVisible()) {
+                    Logger.log(`[WindowPool] Window ${windowId} became visible, hiding it immediately`);
+                    win.hide();
+                }
+            }, 100); // Check every 100ms
+
+            // Clean up interval when window is destroyed
+            win.on('closed', () => {
+                clearInterval(visibilityCheck);
+            });
+        } else {
+            Logger.log(`[WindowPool] MELLOWTEL_DEBUG_VISIBLE is on - window ${windowId} will stay visible`);
+        }
 
         // Set OS-specific user agent ONCE for this window
         const userAgent = platform === 'win32'

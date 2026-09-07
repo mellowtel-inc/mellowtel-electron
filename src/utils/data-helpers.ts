@@ -3,6 +3,7 @@ import { Logger } from '../logger/logger';
 import TurndownService from 'turndown';
 import { Action, FormField, DataRequest } from './data-request';
 import { getWindowPool } from './window-pool';
+import { googleSearchQuery, navigateGoogleTypedSearch } from './google-search';
 import sharp from 'sharp';
 import * as os from 'os';
 
@@ -499,27 +500,50 @@ export async function processUrl(dataRequest: DataRequest): Promise<{ html: stri
             `;
 
             // Load the URL and wait for it to load
-            await new Promise<void>((resolve, reject) => {
-                const domReadyHandler = async () => {
-                    try {
-                        // Inject stealth script after DOM is ready
-                        await win.webContents.executeJavaScript(stealthScript);
-                        resolve();
-                    } catch (error) {
-                        reject(error);
-                    }
-                };
+            const googleQuery = googleSearchQuery(dataRequest.url);
+            if (googleQuery !== null) {
+                // Google fingerprints the stealth patches themselves, so this
+                // path applies none of them; the homepage-then-type route
+                // (rather than direct navigation to /search?q=...) is what
+                // gets a real, live AI Overview instead of a declined one.
+                const typedOk = await navigateGoogleTypedSearch(
+                    win, dataRequest.url, googleQuery,
+                    (msg) => Logger.log(`[processUrl]: ${msg}`)
+                );
+                if (!typedOk) {
+                    Logger.log('[processUrl]: google typed-search failed, falling back to direct navigation');
+                    await new Promise<void>((resolve, reject) => {
+                        win.webContents.once('did-fail-load', (_e: any, _c: number, desc: string) => {
+                            reject(new Error(`Failed to load URL: ${desc}`));
+                        });
+                        win.webContents.once('dom-ready', () => resolve());
+                        Logger.log(`[processUrl]: Loading url ${dataRequest.url}`);
+                        win.loadURL(dataRequest.url);
+                    });
+                }
+            } else {
+                await new Promise<void>((resolve, reject) => {
+                    const domReadyHandler = async () => {
+                        try {
+                            // Inject stealth script after DOM is ready
+                            await win.webContents.executeJavaScript(stealthScript);
+                            resolve();
+                        } catch (error) {
+                            reject(error);
+                        }
+                    };
 
-                const failLoadHandler = (event: any, errorCode: number, errorDescription: string) => {
-                    reject(new Error(`Failed to load URL: ${errorDescription}`));
-                };
+                    const failLoadHandler = (event: any, errorCode: number, errorDescription: string) => {
+                        reject(new Error(`Failed to load URL: ${errorDescription}`));
+                    };
 
-                win.webContents.once('dom-ready', domReadyHandler);
-                win.webContents.once('did-fail-load', failLoadHandler);
+                    win.webContents.once('dom-ready', domReadyHandler);
+                    win.webContents.once('did-fail-load', failLoadHandler);
 
-                Logger.log(`[processUrl]: Loading url ${dataRequest.url}`);
-                win.loadURL(dataRequest.url);
-            });
+                    Logger.log(`[processUrl]: Loading url ${dataRequest.url}`);
+                    win.loadURL(dataRequest.url);
+                });
+            }
 
             Logger.log('[processUrl]: DOM ready');
 
