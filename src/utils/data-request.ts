@@ -59,6 +59,12 @@ interface DataRequestParams {
     json?: { [key: string]: any };
     cerealObject?: string;
     parser_job?: boolean;
+    /** Optional. Caps how many Chromium windows the app-wide WindowPool may
+     *  have open at once, overriding its default (currently 2). See
+     *  WindowPool.getInstance in window-pool.ts - this is a process-wide
+     *  singleton, so only the value from whichever request initializes the
+     *  pool actually takes effect. */
+    maxWindows?: number;
 }
 
 export class DataRequest {
@@ -107,6 +113,7 @@ export class DataRequest {
     json: { [key: string]: any };
     cerealObject: string;
     parser_job: boolean;
+    maxWindows?: number;
 
     constructor({
         url,
@@ -153,7 +160,8 @@ export class DataRequest {
         connectionID = '',
         json = {},
         cerealObject = '{}',
-        parser_job = false
+        parser_job = false,
+        maxWindows
     }: DataRequestParams) {
         this.url = url;
         this.orgId = orgId;
@@ -200,6 +208,7 @@ export class DataRequest {
         this.json = json;
         this.cerealObject = cerealObject;
         this.parser_job = parser_job;
+        this.maxWindows = maxWindows;
     }
 
     // Helper function to parse size strings
@@ -264,6 +273,7 @@ export class DataRequest {
             json: json,
             cerealObject: json.cerealObject,
             parser_job: json.parser_job,
+            maxWindows: json.maxWindows,
         };
         return new DataRequest(params);
     }
