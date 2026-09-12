@@ -69,6 +69,12 @@ interface DataRequestParams {
     json?: { [key: string]: any };
     cerealObject?: string;
     parser_job?: boolean;
+    /** Optional. Caps how many Chromium windows the app-wide WindowPool may
+     *  have open at once, overriding its default (currently 2). See
+     *  WindowPool.getInstance in window-pool.ts - this is a process-wide
+     *  singleton, so only the value from whichever request initializes the
+     *  pool actually takes effect. */
+    maxWindows?: number;
     input?: InputStyle;
     onActionError?: OnActionError;
     actionTimeoutMs?: number;
@@ -121,6 +127,7 @@ export class DataRequest {
     json: { [key: string]: any };
     cerealObject: string;
     parser_job: boolean;
+    maxWindows?: number;
     natural: boolean;
     onActionError: OnActionError;
     actionTimeoutMs: number;
@@ -173,6 +180,7 @@ export class DataRequest {
         json = {},
         cerealObject = '{}',
         parser_job = false,
+        maxWindows,
         input,
         onActionError = 'continue',
         actionTimeoutMs = DEFAULT_ACTION_TIMEOUT_MS,
@@ -223,6 +231,7 @@ export class DataRequest {
         this.json = json;
         this.cerealObject = cerealObject;
         this.parser_job = parser_job;
+        this.maxWindows = maxWindows;
         this.natural = parseNaturalInput(input);
         this.onActionError = onActionError === 'abort' ? 'abort' : 'continue';
         this.actionTimeoutMs = typeof actionTimeoutMs === 'number' && actionTimeoutMs > 0 ? actionTimeoutMs : DEFAULT_ACTION_TIMEOUT_MS;
@@ -292,6 +301,7 @@ export class DataRequest {
             json: json,
             cerealObject: json.cerealObject,
             parser_job: json.parser_job,
+            maxWindows: json.maxWindows,
             input: json.input,
             onActionError: json.onActionError === 'abort' ? 'abort' : 'continue',
             actionTimeoutMs: json.actionTimeoutMs,

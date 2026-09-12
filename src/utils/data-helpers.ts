@@ -3,7 +3,7 @@ import { Logger } from '../logger/logger';
 import TurndownService from 'turndown';
 import { DataRequest } from './data-request';
 import { runActions } from './actions';
-import { getWindowPool } from './window-pool';
+import { getWindowPool, windowPoolConfigFor } from './window-pool';
 import sharp from 'sharp';
 import * as os from 'os';
 
@@ -99,7 +99,7 @@ async function runRequestActions(win: BrowserWindow, dataRequest: DataRequest): 
 }
 
 export async function processHtmlContent(htmlString: string, dataRequest: DataRequest): Promise<{ html: string; markdown: string; screenshot: Buffer | undefined; contentType: string | undefined }> {
-    const windowPool = getWindowPool();
+    const windowPool = getWindowPool(windowPoolConfigFor(dataRequest));
     
     return windowPool.executeWithWindow(async (win: BrowserWindow) => {
         // Create a 60-second timeout promise
@@ -232,7 +232,7 @@ export async function processHtmlContent(htmlString: string, dataRequest: DataRe
 }
 
 export async function processUrl(dataRequest: DataRequest): Promise<{ html: string, markdown: string, screenshot: Buffer | undefined, contentType: string | undefined }> {
-    const windowPool = getWindowPool();
+    const windowPool = getWindowPool(windowPoolConfigFor(dataRequest));
     
     return windowPool.executeWithWindow(async (win: BrowserWindow) => {
         // Create a 60-second timeout promise
