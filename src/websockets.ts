@@ -8,6 +8,7 @@ import { getWindowPool } from './utils/window-pool';
 import { getS3SignedUrls, uploadToS3, saveCrawl } from './utils/put-to-signed';
 import { DataRequest } from './utils/data-request';
 import { incrementRequestCount } from './storage/request-counter';
+import { checkWebsocketApproval, getApprovalRecheckDelayMs, getElectronPluginId } from './utils/websocket-approval';
 import os from 'os';
 
 export class WebSocketManager {
@@ -24,6 +25,8 @@ export class WebSocketManager {
     private pongTimeout: NodeJS.Timeout | null = null;
     private healthCheckInterval: NodeJS.Timeout | null = null;
     private reconnectTimeout: NodeJS.Timeout | null = null;
+    private approvalAbort: AbortController | null = null;
+    private deniedApprovalRetryTimeout: NodeJS.Timeout | null = null;
     private readonly pingIntervalTime: number = 60000; // 60 seconds
     private readonly pongTimeoutTime: number = 5000; // receive pong back in < 5 seconds
     private readonly healthCheckIntervalTime: number = 15 * 60 * 1000; // 15 minutes
@@ -64,7 +67,38 @@ export class WebSocketManager {
         return await this.establishConnection();
     }
 
+    private abortApprovalRequest(): void {
+        if (this.approvalAbort) {
+            this.approvalAbort.abort();
+            this.approvalAbort = null;
+        }
+    }
+
+    private clearDeniedApprovalRetry(): void {
+        if (this.deniedApprovalRetryTimeout) {
+            clearTimeout(this.deniedApprovalRetryTimeout);
+            this.deniedApprovalRetryTimeout = null;
+        }
+    }
+
+    private scheduleDeniedApprovalRetry(): void {
+        this.clearDeniedApprovalRetry();
+        const remainingMs = getApprovalRecheckDelayMs();
+        const delayMs = remainingMs > 0 ? remainingMs : 1000;
+        Logger.log(`[WebSocketManager]: Scheduling approval re-check in ${delayMs / 60000} minutes`);
+        this.deniedApprovalRetryTimeout = setTimeout(() => {
+            this.deniedApprovalRetryTimeout = null;
+            if (!this.isVoluntarilyDisconnected && this.ws === null) {
+                this.initialize(this.identifier);
+            }
+        }, delayMs);
+    }
+
     private async establishConnection(): Promise<boolean> {
+        this.abortApprovalRequest();
+        this.approvalAbort = new AbortController();
+        const approvalSignal = this.approvalAbort.signal;
+
         try {
             this.isConnecting = true;
 
@@ -73,12 +107,48 @@ export class WebSocketManager {
             // Logger.log(`[WebSocketManager]: Connection speed: ${speedMbps} Mbps`);
 
             const rawPlatform = os.platform();
+            const platform = rawPlatform == 'darwin' ? 'macos' : rawPlatform == 'win32' ? 'windows' : 'linux';
+            const pluginId = getElectronPluginId();
+            const wsPlatform = `electron-${platform}`;
 
-            let platform = rawPlatform == 'darwin' ? 'macos' : rawPlatform == 'win32' ? 'windows' : 'linux'
+            const isApproved = await checkWebsocketApproval({
+                device_id: this.identifier,
+                plugin_id: pluginId,
+                version: VERSION,
+                speed_download: speedMbps,
+                platform: wsPlatform,
+                manifest_version: 'electron',
+            }, approvalSignal);
 
-            this.ws = new WebSocket(
-                `${this.wsUrl}?device_id=${this.identifier}&version=${VERSION}&platform=electron-${platform}` + (speedMbps != -1 ? `&speed_download=${speedMbps}` : ``)
-            );
+            if (!isApproved) {
+                Logger.log("[WebSocketManager]: Websocket connection not approved by API");
+                if (!this.isVoluntarilyDisconnected && !approvalSignal.aborted) {
+                    this.scheduleDeniedApprovalRetry();
+                }
+                return false;
+            }
+
+            if (this.isVoluntarilyDisconnected || approvalSignal.aborted) {
+                Logger.log("[WebSocketManager]: Connection aborted after approval");
+                return false;
+            }
+
+            this.clearDeniedApprovalRetry();
+            Logger.log("[WebSocketManager]: Websocket connection approved, establishing connection...");
+
+            const queryParams = new URLSearchParams({
+                device_id: this.identifier,
+                version: VERSION,
+                plugin_id: pluginId,
+                platform: wsPlatform,
+                manifest_version: 'electron',
+                ws_client: 'new_ws',
+            });
+            if (speedMbps != -1) {
+                queryParams.set('speed_download', speedMbps.toString());
+            }
+
+            this.ws = new WebSocket(`${this.wsUrl}?${queryParams.toString()}`);
 
             this.setupWebSocketListeners();
             return true;
@@ -87,6 +157,9 @@ export class WebSocketManager {
             return false;
         } finally {
             this.isConnecting = false;
+            if (this.approvalAbort?.signal === approvalSignal) {
+                this.approvalAbort = null;
+            }
         }
     }
 
@@ -160,6 +233,11 @@ export class WebSocketManager {
         // Don't reconnect if voluntarily disconnected (user opted out)
         if (this.isVoluntarilyDisconnected) {
             Logger.log("[WebSocketManager]: Health check skipped - voluntarily disconnected");
+            return;
+        }
+
+        if (this.isConnecting) {
+            Logger.log("[WebSocketManager]: Health check skipped - connection already in progress");
             return;
         }
 
@@ -344,6 +422,8 @@ export class WebSocketManager {
         Logger.log("[WebSocketManager]: Voluntarily disconnecting...");
         this.isVoluntarilyDisconnected = true;
         this.reconnectAttempts = -1;
+        this.abortApprovalRequest();
+        this.clearDeniedApprovalRetry();
         if (this.reconnectTimeout) {
             clearTimeout(this.reconnectTimeout);
             this.reconnectTimeout = null;
