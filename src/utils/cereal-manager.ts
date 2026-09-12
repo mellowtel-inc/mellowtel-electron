@@ -1,5 +1,6 @@
 import { BrowserWindow } from 'electron';
 import { Logger } from '../logger/logger';
+import { ObservedError } from '../observability/observed-error';
 
 /**
  * Optimized Cereal Processing Manager
@@ -168,7 +169,11 @@ export class CerealManager {
         
         // Check if the selected window is marked for rotation and at/over capacity
         if (hostInfo.needsRotation && hostInfo.activeJobs >= CONCURRENT_CALLS_PER_WINDOW) {
-            const error = new Error(`[CerealManager] All healthy windows at capacity. Window ${hostInfo.index} needs rotation but has ${hostInfo.activeJobs} active jobs. Discarding request for ${recordID}.`);
+            const error = new ObservedError(`[CerealManager] All healthy windows at capacity. Window ${hostInfo.index} needs rotation but has ${hostInfo.activeJobs} active jobs. Discarding request for ${recordID}.`, {
+                code: 'CEREAL_FAILED',
+                stage: 'cereal',
+                raw: { recordID, windowIndex: hostInfo.index, activeJobs: hostInfo.activeJobs },
+            });
             Logger.error(error.message);
             throw error;
         }
@@ -407,7 +412,11 @@ export class CerealManager {
 
         const timeoutPromise = new Promise((_, reject) => {
             timeoutId = setTimeout(() => {
-                reject(new Error(`Cereal process timed out after ${timeout}ms for ${recordID}`));
+                reject(new ObservedError(`Cereal process timed out after ${timeout}ms for ${recordID}`, {
+                    code: 'CEREAL_TIMEOUT',
+                    stage: 'cereal',
+                    raw: { timeout_ms: timeout, recordID },
+                }));
             }, timeout);
         });
 

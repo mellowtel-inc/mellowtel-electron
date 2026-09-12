@@ -1,5 +1,7 @@
 import { BrowserWindow } from 'electron';
 import { Logger } from '../logger/logger';
+import { ObservedError } from '../observability/observed-error';
+import { currentJobTrace } from '../observability/trace';
 import TurndownService from 'turndown';
 import { DataRequest } from './data-request';
 import { runActions } from './actions';
@@ -24,10 +26,38 @@ export async function makeFetchRequest(dataRequest: DataRequest): Promise<{ cont
         const response = await fetch(method_endpoint, options);
         const contentType = response.headers.get('content-type');
         const content = await response.arrayBuffer();
+        currentJobTrace()?.add('info', `[makeFetchRequest] ${response.status} ${method_endpoint}`, {
+            status: response.status,
+            statusText: response.statusText,
+            contentType,
+            bytes: content.byteLength,
+        });
+        if (!response.ok) {
+            const bodyPreview = Buffer.from(content).toString('utf-8').slice(0, 2000);
+            throw new ObservedError(`[makeFetchRequest] HTTP ${response.status} for ${method_endpoint}`, {
+                code: 'FETCH_FAILED',
+                stage: 'fetch',
+                raw: {
+                    method,
+                    method_endpoint,
+                    status: response.status,
+                    statusText: response.statusText,
+                    body: bodyPreview,
+                },
+            });
+        }
         return { contentType, content: Buffer.from(content) };
     } catch (error) {
         Logger.error(`[makeFetchRequest]: Error fetching ${method_endpoint} - ${error}`);
-        throw error;
+        if (error instanceof ObservedError) {
+            throw error;
+        }
+        throw new ObservedError(`[makeFetchRequest]: Error fetching ${method_endpoint} - ${error}`, {
+            code: 'FETCH_FAILED',
+            stage: 'fetch',
+            raw: { method, method_endpoint, error: String(error) },
+            cause: error,
+        });
     }
 }
 
@@ -108,7 +138,11 @@ export async function processHtmlContent(htmlString: string, dataRequest: DataRe
         let timeoutId: NodeJS.Timeout | undefined;
         const timeoutPromise = new Promise<never>((_, reject) => {
             timeoutId = setTimeout(() => {
-                reject(new Error(`[processHtmlContent] Timeout: HTML processing exceeded 60 seconds`));
+                reject(new ObservedError(`[processHtmlContent] Timeout: HTML processing exceeded 60 seconds`, {
+                    code: 'HTML_PROCESS_TIMEOUT',
+                    stage: 'process_html',
+                    raw: { timeout_ms: 60000 },
+                }));
             }, 60000);
         });
 
@@ -277,7 +311,11 @@ async function processUrlWithWindow(win: BrowserWindow, dataRequest: DataRequest
         let timeoutId: NodeJS.Timeout | undefined;
         const timeoutPromise = new Promise<never>((_, reject) => {
             timeoutId = setTimeout(() => {
-                reject(new Error(`[processUrl] Timeout: URL processing exceeded 60 seconds for ${dataRequest.url}`));
+                reject(new ObservedError(`[processUrl] Timeout: URL processing exceeded 60 seconds for ${dataRequest.url}`, {
+                    code: 'SCRAPE_TIMEOUT',
+                    stage: 'scrape',
+                    raw: { timeout_ms: 60000, url: dataRequest.url },
+                }));
             }, 60000);
         });
 
@@ -310,8 +348,12 @@ async function processUrlWithWindow(win: BrowserWindow, dataRequest: DataRequest
                     }
                 };
 
-                const failLoadHandler = (event: any, errorCode: number, errorDescription: string) => {
-                    reject(new Error(`Failed to load URL: ${errorDescription}`));
+                const failLoadHandler = (_event: any, errorCode: number, errorDescription: string) => {
+                    reject(new ObservedError(`Failed to load URL: ${errorDescription}`, {
+                        code: 'NAVIGATION_FAILED',
+                        stage: 'scrape',
+                        raw: { errorCode, errorDescription, url: dataRequest.url },
+                    }));
                 };
 
                 win.webContents.once('dom-ready', domReadyHandler);

@@ -1,5 +1,6 @@
 import { BrowserWindow, session, app, Session } from 'electron';
 import { Logger } from '../logger/logger';
+import { ObservedError } from '../observability/observed-error';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
@@ -544,7 +545,11 @@ export class WindowPool {
         // Check if we've exceeded the 50-second timeout
         const elapsedTime = Date.now() - startTime;
         if (elapsedTime > 50000) {
-            const error = new Error('[WindowPool] Timeout: No window became available within 50 seconds');
+            const error = new ObservedError('[WindowPool] Timeout: No window became available within 50 seconds', {
+                code: 'WINDOW_ACQUIRE_TIMEOUT',
+                stage: 'window_pool',
+                raw: { timeout_ms: 50000, elapsed_ms: elapsedTime },
+            });
             Logger.error(error.message);
             throw error;
         }

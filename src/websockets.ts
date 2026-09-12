@@ -1,7 +1,7 @@
 import WebSocket from 'isomorphic-ws';
 import { RateLimiter } from './local-rate-limiting/rate-limiter';
 import { Logger } from './logger/logger';
-import { VERSION } from './constants';
+import { MAX_DAILY_RATE, VERSION } from './constants';
 import { makeFetchRequest, processUrl, processHtmlContent } from './utils/data-helpers';
 import { getCerealManager } from './utils/cereal-manager';
 import { getWindowPool } from './utils/window-pool';
@@ -9,6 +9,16 @@ import { handleJarEvent, resumeJarWindow, shutdownJarWindow } from './utils/jar'
 import { getS3SignedUrls, uploadToS3, saveCrawl } from './utils/put-to-signed';
 import { DataRequest } from './utils/data-request';
 import { incrementRequestCount } from './storage/request-counter';
+import {
+    ObservedError,
+    classifyRequestType,
+    createJobTrace,
+    currentJobTrace,
+    hasErrorReporting,
+    jobUsesCereal,
+    reportJobError,
+    runWithJobTrace,
+} from './observability';
 import os from 'os';
 
 export class WebSocketManager {
@@ -214,6 +224,25 @@ export class WebSocketManager {
                 Logger.log(`[WebSocketManager]: Received URL to process - ${dataRequest.url}`);
 
                 if (!RateLimiter.shouldContinue()) {
+                    // Only pay for job tracing / error reporting when this job
+                    // actually has somewhere to send it - otherwise there's
+                    // nothing to track.
+                    if (hasErrorReporting(dataRequest)) {
+                        const trace = createJobTrace();
+                        await runWithJobTrace(trace, async () => {
+                            trace.mark('rate_limit', 'Daily rate limit reached');
+                            await reportJobError({
+                                dataRequest,
+                                error: new ObservedError('RATE LIMIT REACHED', {
+                                    code: 'RATE_LIMIT',
+                                    stage: 'rate_limit',
+                                    raw: { max_daily_rate: MAX_DAILY_RATE },
+                                }),
+                                severity: 'fatal',
+                                stage: 'rate_limit',
+                            });
+                        });
+                    }
                     await this.handleRateLimitReached();
                     return;
                 }
@@ -251,36 +280,114 @@ export class WebSocketManager {
     }
 
     private async processDataRequest(dataRequest: DataRequest, batch_execution = false, batch_id = ''): Promise<void> {
+        // No error_callback_endpoint on this job means there's nowhere to
+        // post a report, so skip creating a job trace and all the Logger
+        // hook / event-collection overhead that comes with it - none of it
+        // would ever be sent anywhere. Just run the job like before this
+        // observability layer existed.
+        if (!hasErrorReporting(dataRequest)) {
+            return this.runDataRequest(dataRequest, batch_execution, batch_id);
+        }
+
+        const trace = createJobTrace();
+        await runWithJobTrace(trace, async () => {
+            try {
+                await this.runDataRequest(dataRequest, batch_execution, batch_id);
+            } catch (error) {
+                await reportJobError({
+                    dataRequest,
+                    error,
+                    severity: 'fatal',
+                    stage: currentJobTrace()?.stage,
+                    batch_execution,
+                    batch_id,
+                });
+                throw error;
+            }
+        });
+    }
+
+    private async runDataRequest(dataRequest: DataRequest, batch_execution = false, batch_id = ''): Promise<void> {
+        const trace = currentJobTrace();
+        trace?.mark('accepted', 'Job accepted', {
+            request_type: classifyRequestType(dataRequest),
+            recordID: dataRequest.recordID,
+            batch_execution,
+            batch_id,
+        });
+
         let processedContent: { html: string; markdown: string; screenshot?: Buffer; contentType?: string } | undefined;
         let fileNameBytes: string = "";
         if (dataRequest.parser_job) {
-            // Simple fetch for parser jobs - use the URL directly
-            const response = await fetch(dataRequest.url);
-            const content = await response.text();
-            processedContent = { html: content, markdown: '' };
+            trace?.mark('parser_fetch', `Parser fetch ${dataRequest.url}`);
+            try {
+                const response = await fetch(dataRequest.url);
+                const content = await response.text();
+                if (!response.ok) {
+                    throw new ObservedError(`[parser_fetch] HTTP ${response.status} for ${dataRequest.url}`, {
+                        code: 'PARSER_FETCH_FAILED',
+                        stage: 'parser_fetch',
+                        raw: { status: response.status, statusText: response.statusText, body: content },
+                    });
+                }
+                processedContent = { html: content, markdown: '' };
+            } catch (error) {
+                if (error instanceof ObservedError) {
+                    throw error;
+                }
+                throw new ObservedError(`[parser_fetch] Error fetching ${dataRequest.url} - ${error}`, {
+                    code: 'PARSER_FETCH_FAILED',
+                    stage: 'parser_fetch',
+                    raw: { url: dataRequest.url, error: String(error) },
+                    cause: error,
+                });
+            }
         } else if (dataRequest.method_endpoint) {
+            trace?.mark('fetch', `Fetch ${dataRequest.method} ${dataRequest.method_endpoint}`);
             const fetchResult = await makeFetchRequest(dataRequest);
             if (dataRequest.saveFile) {
+                trace?.mark('s3', `Upload file for ${dataRequest.recordID}`);
                 const { uploadUrl, fileName } = await getS3SignedUrls(dataRequest.recordID, fetchResult.contentType ?? 'application/octet-stream');
                 await uploadToS3(uploadUrl, fetchResult.contentType ?? 'application/octet-stream', fetchResult.content);
                 fileNameBytes = fileName;
-                // For saved files, don't process content further
                 processedContent = { html: '', markdown: '' };
             } else {
-                // Convert Buffer to string and process like processUrl does
+                trace?.mark('process_html', 'Process fetched HTML in window pool');
                 const contentString = fetchResult.content.toString('utf-8');
                 processedContent = await processHtmlContent(contentString, dataRequest);
             }
         } else {
+            trace?.mark('scrape', `Scrape ${dataRequest.url}`);
             processedContent = await processUrl(dataRequest);
         }
 
+        if (hasErrorReporting(dataRequest)) {
+            const failedActions = (dataRequest.actionResults || []).filter(
+                (result) => result.status === 'failed' || result.status === 'timeout'
+            );
+            if (failedActions.length > 0) {
+                await reportJobError({
+                    dataRequest,
+                    error: new ObservedError(`${failedActions.length} action step(s) failed`, {
+                        code: 'ACTION_FAILED',
+                        stage: 'actions',
+                        raw: { actionResults: dataRequest.actionResults },
+                    }),
+                    severity: 'partial',
+                    stage: 'actions',
+                    batch_execution,
+                    batch_id,
+                });
+            }
+        }
+
         let cereal_result: any = {};
+        let cereal_success = true;
         try {
-            if (JSON.parse(dataRequest.cerealObject).useCereal) {
+            if (jobUsesCereal(dataRequest)) {
+                trace?.mark('cereal', 'Running cereal extraction');
                 Logger.log("[processDataRequest] : using cereal [🥣] with optimized CerealManager");
 
-                // Use optimized CerealManager instead of cerealMain
                 const cerealManager = getCerealManager();
                 cereal_result = await cerealManager.processCerealJob(
                     dataRequest.cerealObject,
@@ -293,13 +400,25 @@ export class WebSocketManager {
                 Logger.log("############################################");
             }
         } catch (e) {
+            cereal_success = false;
             Logger.log(
                 "[processDataRequest] : error in cereal processing => ",
                 e,
             );
+            if (hasErrorReporting(dataRequest)) {
+                await reportJobError({
+                    dataRequest,
+                    error: e,
+                    severity: 'partial',
+                    stage: 'cereal',
+                    batch_execution,
+                    batch_id,
+                });
+            }
             cereal_result = {};
         }
 
+        trace?.mark('save_crawl', 'Posting crawl result');
         await saveCrawl(
             dataRequest,
             processedContent.html,
@@ -308,11 +427,12 @@ export class WebSocketManager {
             batch_id,
             false,
             cereal_result,
-            fileNameBytes
+            fileNameBytes,
+            cereal_success
         );
 
-        // Increment request count after successful processing
         incrementRequestCount();
+        trace?.mark('completed', 'Job completed');
     }
 
     private async handleRateLimitReached(): Promise<void> {

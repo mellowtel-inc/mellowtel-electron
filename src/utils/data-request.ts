@@ -67,6 +67,8 @@ interface DataRequestParams {
     divContained?: boolean;
     aristotele?: boolean;
     save_html_endpoint?: string;
+    /** Per-job URL that receives structured error reports. Empty = do not POST. */
+    error_callback_endpoint?: string;
     connectionID?: string;
     json?: { [key: string]: any };
     cerealObject?: string;
@@ -133,6 +135,7 @@ export class DataRequest {
     divContained: boolean;
     aristotele: boolean;
     save_html_endpoint: string;
+    error_callback_endpoint: string;
     connectionID: string;
     json: { [key: string]: any };
     cerealObject: string;
@@ -189,6 +192,7 @@ export class DataRequest {
         divContained = false,
         aristotele = false,
         save_html_endpoint = 'https://request.mellow.tel/',
+        error_callback_endpoint = '',
         connectionID = '',
         json = {},
         cerealObject = '{}',
@@ -243,6 +247,7 @@ export class DataRequest {
         this.divContained = divContained;
         this.aristotele = aristotele;
         this.save_html_endpoint = save_html_endpoint;
+        this.error_callback_endpoint = error_callback_endpoint || '';
         this.connectionID = connectionID;
         this.json = json;
         this.cerealObject = cerealObject;
@@ -316,6 +321,7 @@ export class DataRequest {
             divContained: json.divContained,
             aristotele: json.aristotele,
             save_html_endpoint: json.save_html_endpoint,
+            error_callback_endpoint: json.error_callback_endpoint || json.error_endpoint || '',
             connectionID: json.connectionID,
             json: json,
             cerealObject: json.cerealObject,
