@@ -1,11 +1,12 @@
-import { BrowserWindow, session } from 'electron';
+import { BrowserWindow } from 'electron';
 import { Logger } from '../logger/logger';
 import TurndownService from 'turndown';
 import { DataRequest } from './data-request';
 import { runActions } from './actions';
 import { getWindowPool, windowPoolConfigFor } from './window-pool';
+import { executeWithJarWindow, parseJobOrigin, resetJarAll, resetJarOrigin, restoreCookies, snapshotCookies } from './jar';
+import { applyJobClient, buildStealthScript, releaseJobClient } from './client';
 import sharp from 'sharp';
-import * as os from 'os';
 
 export async function makeFetchRequest(dataRequest: DataRequest): Promise<{ contentType: string | null, content: Buffer }> {
     const { method_endpoint, method, method_payload, method_headers } = dataRequest;
@@ -102,6 +103,7 @@ export async function processHtmlContent(htmlString: string, dataRequest: DataRe
     const windowPool = getWindowPool(windowPoolConfigFor(dataRequest));
     
     return windowPool.executeWithWindow(async (win: BrowserWindow) => {
+        applyJobClient(win, dataRequest.client);
         // Create a 60-second timeout promise
         let timeoutId: NodeJS.Timeout | undefined;
         const timeoutPromise = new Promise<never>((_, reject) => {
@@ -227,14 +229,50 @@ export async function processHtmlContent(htmlString: string, dataRequest: DataRe
             if (timeoutId) {
                 clearTimeout(timeoutId);
             }
+            releaseJobClient(win);
         }
     });
 }
 
+async function applyJarReset(dataRequest: DataRequest): Promise<void> {
+    if (dataRequest.resetJar === 'none') {
+        return;
+    }
+    if (dataRequest.resetJar === 'all') {
+        await resetJarAll();
+        return;
+    }
+    await resetJarOrigin(parseJobOrigin(dataRequest.url));
+}
+
 export async function processUrl(dataRequest: DataRequest): Promise<{ html: string, markdown: string, screenshot: Buffer | undefined, contentType: string | undefined }> {
-    const windowPool = getWindowPool(windowPoolConfigFor(dataRequest));
-    
-    return windowPool.executeWithWindow(async (win: BrowserWindow) => {
+    await applyJarReset(dataRequest);
+
+    const run = (win: BrowserWindow) => processUrlWithWindow(win, dataRequest);
+
+    if (dataRequest.jar === 'empty') {
+        const windowPool = getWindowPool(windowPoolConfigFor(dataRequest));
+        return windowPool.executeWithWindow(run);
+    }
+
+    const origin = parseJobOrigin(dataRequest.url);
+    return executeWithJarWindow(origin, async (win: BrowserWindow) => {
+        const snapshot = dataRequest.jar === 'reuse' ? await snapshotCookies(origin) : undefined;
+        try {
+            return await run(win);
+        } finally {
+            if (dataRequest.jar === 'reuse' && snapshot) {
+                try {
+                    await restoreCookies(origin, snapshot);
+                } catch (error) {
+                    Logger.error(`[processUrl]: Failed to restore jar cookies for ${origin}: ${error}`);
+                }
+            }
+        }
+    });
+}
+
+async function processUrlWithWindow(win: BrowserWindow, dataRequest: DataRequest): Promise<{ html: string, markdown: string, screenshot: Buffer | undefined, contentType: string | undefined }> {
         // Create a 60-second timeout promise
         let timeoutId: NodeJS.Timeout | undefined;
         const timeoutPromise = new Promise<never>((_, reject) => {
@@ -242,6 +280,8 @@ export async function processUrl(dataRequest: DataRequest): Promise<{ html: stri
                 reject(new Error(`[processUrl] Timeout: URL processing exceeded 60 seconds for ${dataRequest.url}`));
             }, 60000);
         });
+
+        const client = applyJobClient(win, dataRequest.client);
 
         // Race between the actual processing and the timeout
         try {
@@ -255,195 +295,8 @@ export async function processUrl(dataRequest: DataRequest): Promise<{ html: stri
                     );
                 }
 
-                // Note: User agent and session headers are already configured in the window pool
-                // This prevents accumulating event listeners on every request
-
                 try {
-            // Add stealth features to avoid bot detection and block UI dialogs
-            const stealthScript = `
-                (function() {
-                    'use strict';
-
-                    // === DIALOG BLOCKING ===
-                    window.alert = function() { return undefined; };
-                    window.confirm = function() { return false; };
-                    window.prompt = function() { return null; };
-                    window.print = function() { return undefined; };
-
-                    // === DETECTION BYPASS ===
-
-                    // 1. Webdriver
-                    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-                    try { delete navigator.__proto__.webdriver; } catch(e) {}
-
-                    // 2. Chrome object
-                    Object.defineProperty(window, 'chrome', {
-                        writable: true,
-                        enumerable: true,
-                        configurable: false,
-                        value: {
-                            runtime: {
-                                onConnect: undefined,
-                                onMessage: undefined,
-                                connect: function() {},
-                                sendMessage: function() {},
-                            },
-                            loadTimes: function() { return {}; },
-                            csi: function() { return {}; },
-                        },
-                    });
-
-                    // 3. Plugins array
-                    const makePluginArray = () => {
-                        const plugins = [
-                            { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
-                            { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
-                            { name: 'Native Client', filename: 'internal-nacl-plugin', description: '' },
-                        ];
-                        const arr = Object.create(PluginArray.prototype);
-                        plugins.forEach((p, i) => {
-                            const plugin = Object.create(Plugin.prototype);
-                            Object.defineProperties(plugin, {
-                                name: { value: p.name, enumerable: true },
-                                filename: { value: p.filename, enumerable: true },
-                                description: { value: p.description, enumerable: true },
-                                length: { value: 0, enumerable: true },
-                            });
-                            arr[i] = plugin;
-                        });
-                        Object.defineProperties(arr, {
-                            length: { value: plugins.length, enumerable: true },
-                            item: { value: (i) => arr[i] || null },
-                            namedItem: { value: (n) => plugins.find(p => p.name === n) || null },
-                            refresh: { value: () => {} },
-                        });
-                        return arr;
-                    };
-                    Object.defineProperty(navigator, 'plugins', { get: makePluginArray });
-
-                    // 4. Languages
-                    Object.defineProperty(navigator, 'languages', {
-                        get: () => Object.freeze(['en-US', 'en'])
-                    });
-
-                    // 5. Dimensions fix for offscreen rendering
-                    if (window.outerWidth === 0) {
-                        Object.defineProperty(window, 'outerWidth', { get: () => window.innerWidth });
-                    }
-                    if (window.outerHeight === 0) {
-                        Object.defineProperty(window, 'outerHeight', { get: () => window.innerHeight + 85 });
-                    }
-
-                    // 6. WebGL fingerprint
-                    const hookWebGL = (proto) => {
-                        const original = proto.getParameter;
-                        proto.getParameter = function(param) {
-                            if (param === 37445) return 'Google Inc. (Intel)';
-                            if (param === 37446) return 'ANGLE (Intel, Intel(R) UHD Graphics 630, OpenGL 4.1)';
-                            return original.call(this, param);
-                        };
-                    };
-                    hookWebGL(WebGLRenderingContext.prototype);
-                    if (typeof WebGL2RenderingContext !== 'undefined') {
-                        hookWebGL(WebGL2RenderingContext.prototype);
-                    }
-
-                    // 7. Permissions API
-                    if (navigator.permissions) {
-                        const orig = navigator.permissions.query.bind(navigator.permissions);
-                        navigator.permissions.query = (params) => {
-                            if (params.name === 'notifications') {
-                                return Promise.resolve({ state: 'prompt', onchange: null });
-                            }
-                            return orig(params).catch(() => ({ state: 'prompt', onchange: null }));
-                        };
-                    }
-
-                    // 8. Screen properties
-                    Object.defineProperty(screen, 'availTop', { value: 0 });
-                    Object.defineProperty(screen, 'availLeft', { value: 0 });
-                    Object.defineProperty(screen, 'colorDepth', { value: 24 });
-                    Object.defineProperty(screen, 'pixelDepth', { value: 24 });
-
-                    // 9. Connection type
-                    if (navigator.connection) {
-                        Object.defineProperty(navigator.connection, 'rtt', { value: 50 });
-                    }
-
-                    // 10. Hardware concurrency
-                    Object.defineProperty(navigator, 'hardwareConcurrency', { value: 8 });
-
-                    // 11. Device memory
-                    Object.defineProperty(navigator, 'deviceMemory', { value: 8 });
-
-                    // === HUMAN SIMULATION ===
-
-                    // Mouse movement
-                    let mouseX = Math.floor(Math.random() * window.innerWidth);
-                    let mouseY = Math.floor(Math.random() * window.innerHeight);
-                    const mouseInterval = setInterval(() => {
-                        mouseX += (Math.random() - 0.5) * 5;
-                        mouseY += (Math.random() - 0.5) * 5;
-                        mouseX = Math.max(0, Math.min(window.innerWidth, mouseX));
-                        mouseY = Math.max(0, Math.min(window.innerHeight, mouseY));
-                        document.dispatchEvent(new MouseEvent('mousemove', {
-                            clientX: mouseX, clientY: mouseY, bubbles: true
-                        }));
-                    }, 100 + Math.random() * 200);
-
-                    // Timing variation
-                    const origTimeout = window.setTimeout;
-                    window.setTimeout = function(fn, delay, ...args) {
-                        return origTimeout(fn, Math.max(0, (delay || 0) + (Math.random() * 10 - 5)), ...args);
-                    };
-
-                    window.addEventListener('beforeunload', () => clearInterval(mouseInterval));
-
-                    // === BLOCK UI-TRIGGERING APIS ===
-
-                    window.Notification = function() { throw new Error('Disabled'); };
-                    window.Notification.permission = 'denied';
-                    window.Notification.requestPermission = () => Promise.resolve('denied');
-
-                    window.PaymentRequest = undefined;
-                    window.showOpenFilePicker = undefined;
-                    window.showSaveFilePicker = undefined;
-                    window.showDirectoryPicker = undefined;
-
-                    navigator.share = undefined;
-                    navigator.canShare = () => false;
-
-                    if (navigator.credentials) {
-                        navigator.credentials.get = () => Promise.reject(new Error('Disabled'));
-                        navigator.credentials.store = () => Promise.reject(new Error('Disabled'));
-                        navigator.credentials.create = () => Promise.reject(new Error('Disabled'));
-                    }
-
-                    Element.prototype.requestFullscreen = () => Promise.reject(new Error('Disabled'));
-                    if (Element.prototype.webkitRequestFullscreen) {
-                        Element.prototype.webkitRequestFullscreen = function() {};
-                    }
-
-                    // Block file input clicks
-                    const originalClick = HTMLInputElement.prototype.click;
-                    HTMLInputElement.prototype.click = function() {
-                        if (this.type === 'file') return;
-                        return originalClick.call(this);
-                    };
-
-                    // Block keyboard shortcuts that trigger dialogs
-                    document.addEventListener('keydown', function(e) {
-                        if (e.ctrlKey || e.metaKey) {
-                            if (['p', 's', 'f', 'o', 'n'].includes(e.key.toLowerCase())) {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                return false;
-                            }
-                        }
-                    }, true);
-
-                })();
-            `;
+            const stealthScript = buildStealthScript(client);
 
             // Load the URL and wait for it to load
             await new Promise<void>((resolve, reject) => {
@@ -557,8 +410,8 @@ export async function processUrl(dataRequest: DataRequest): Promise<{ html: stri
             if (timeoutId) {
                 clearTimeout(timeoutId);
             }
+            releaseJobClient(win);
         }
-    });
 }
 
 export async function cerealMain(

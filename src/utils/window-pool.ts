@@ -1,11 +1,11 @@
 import { BrowserWindow, session, app, Session } from 'electron';
 import { Logger } from '../logger/logger';
-import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
 import pLimit from 'p-limit';
 import { DIALOG_BLOCK_SOURCE } from './dialog-block-source';
+import { attachClientHeaderHook, getDeviceClient } from './client';
 
 // Preload that stubs alert/confirm/prompt before page scripts run (fixes
 // Windows dialog leak). DIALOG_BLOCK_SOURCE is a string constant imported
@@ -15,7 +15,7 @@ import { DIALOG_BLOCK_SOURCE } from './dialog-block-source';
 // even when host apps bundle their main process (webpack, vite, esbuild).
 let cachedDialogPreloadPath: string | null = null;
 
-function getDialogBlockPreloadPath(): string {
+export function getDialogBlockPreloadPath(): string {
     if (cachedDialogPreloadPath) {
         return cachedDialogPreloadPath;
     }
@@ -268,8 +268,6 @@ export class WindowPool {
      * session.on('will-download') would accumulate a listener on every reuse.
      */
     private setupSlotSession(slotSession: Session, slot: number): void {
-        const platform = os.platform();
-
         // Prevent downloads from being saved to disk
         slotSession.on('will-download', (event) => {
             Logger.log(`[WindowPool] Download blocked in slot ${slot}`);
@@ -299,27 +297,7 @@ export class WindowPool {
             callback(0); // Accept all certificates to avoid dialogs
         });
 
-        // Set up stealth headers once for this slot's session
-        slotSession.webRequest.onBeforeSendHeaders((details, callback) => {
-            const headers = {
-                ...details.requestHeaders,
-                'Referer': 'https://www.google.com/',
-                'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="139", "Google Chrome";v="139"',
-                'sec-ch-ua-mobile': '?0',
-                'sec-ch-ua-platform': platform === 'win32' ? '"Windows"' : '"macOS"',
-                'sec-fetch-dest': 'document',
-                'sec-fetch-mode': 'navigate',
-                'sec-fetch-site': 'cross-site',
-                'sec-fetch-user': '?1',
-                'upgrade-insecure-requests': '1',
-                'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-                'accept-language': 'en-US,en;q=0.9',
-                'accept-encoding': 'gzip, deflate, br, zstd',
-                'cache-control': 'max-age=0'
-            };
-
-            callback({ requestHeaders: headers });
-        });
+        attachClientHeaderHook(slotSession);
     }
 
     /**
@@ -339,7 +317,6 @@ export class WindowPool {
         // creations can never grab the same slot / session.
         const slot = this.acquireSlot();
         const windowId = `window-slot${slot}-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
-        const platform = os.platform();
 
         let createdWindow: BrowserWindow | undefined;
         try {
@@ -509,12 +486,7 @@ export class WindowPool {
             clearInterval(visibilityCheck);
         });
 
-        // Set OS-specific user agent ONCE for this window
-        const userAgent = platform === 'win32'
-            ? 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36'
-            : 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36';
-
-        win.webContents.setUserAgent(userAgent);
+        win.webContents.setUserAgent(getDeviceClient().userAgent || '');
 
         // Add error handling
         win.webContents.on('render-process-gone', (event, details) => {
@@ -897,6 +869,17 @@ export class WindowPool {
                         Logger.error(`[WindowPool] Error loading blank page: ${err}`);
                     }
                 });
+            }
+
+            // Drop cookies/storage/cache so the next empty job cannot inherit this one.
+            if (!window.isDestroyed()) {
+                const slotSession = window.webContents.session;
+                try {
+                    await slotSession.clearStorageData();
+                    await slotSession.clearCache();
+                } catch (err) {
+                    Logger.error(`[WindowPool] Error clearing slot session: ${err}`);
+                }
             }
         } catch (error) {
             if (!window.isDestroyed()) {

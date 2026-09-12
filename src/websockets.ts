@@ -5,6 +5,7 @@ import { VERSION } from './constants';
 import { makeFetchRequest, processUrl, processHtmlContent } from './utils/data-helpers';
 import { getCerealManager } from './utils/cereal-manager';
 import { getWindowPool } from './utils/window-pool';
+import { handleJarEvent, resumeJarWindow, shutdownJarWindow } from './utils/jar';
 import { getS3SignedUrls, uploadToS3, saveCrawl } from './utils/put-to-signed';
 import { DataRequest } from './utils/data-request';
 import { incrementRequestCount } from './storage/request-counter';
@@ -46,6 +47,7 @@ export class WebSocketManager {
         this.isVoluntarilyDisconnected = false;
         getWindowPool().resume();
         getCerealManager().resume();
+        resumeJarWindow();
 
         if (this.ws !== null) {
             Logger.log("[WebSocketManager]: WebSocket is already connected");
@@ -196,6 +198,11 @@ export class WebSocketManager {
     private async handleIncomingMessage(data: any): Promise<void> {
         try {
             const json = JSON.parse(data.data);
+
+            if (json.type_event === 'jar') {
+                await handleJarEvent(json);
+                return;
+            }
 
             if (json.type_event === 'batch') {
                 const batchArray = JSON.parse(json.batch_array);
@@ -363,7 +370,8 @@ export class WebSocketManager {
         this.disconnect();
         await Promise.all([
             getWindowPool().shutdown(),
-            getCerealManager().shutdown()
+            getCerealManager().shutdown(),
+            shutdownJarWindow(),
         ]);
     }
 }

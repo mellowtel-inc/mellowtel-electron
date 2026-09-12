@@ -10,6 +10,8 @@ import {
     parseTypingConfig,
     TypingConfig,
 } from "./actions/types";
+import { JarMode, parseJarMode, parseResetJar, ResetJar } from "./jar/types";
+import { ClientConfig, parseClient } from "./client";
 
 interface Size {
     width: number;
@@ -75,6 +77,14 @@ interface DataRequestParams {
      *  singleton, so only the value from whichever request initializes the
      *  pool actually takes effect. */
     maxWindows?: number;
+    /** empty: ignore stored origin data. reuse: load, do not keep this visit's cookies.
+     *  update: load and keep this visit. Default empty. */
+    jar?: JarMode;
+    /** Wipe stored jar data before load. origin uses this job's URL. Default none. */
+    resetJar?: ResetJar;
+    /** Optional per-scrape presentation overlay. Omitted fields use the device
+     *  helper (UA, locale, hardware) plus current scrape defaults. */
+    client?: ClientConfig;
     input?: InputStyle;
     onActionError?: OnActionError;
     actionTimeoutMs?: number;
@@ -128,6 +138,9 @@ export class DataRequest {
     cerealObject: string;
     parser_job: boolean;
     maxWindows?: number;
+    jar: JarMode;
+    resetJar: ResetJar;
+    client: ClientConfig;
     natural: boolean;
     onActionError: OnActionError;
     actionTimeoutMs: number;
@@ -181,6 +194,9 @@ export class DataRequest {
         cerealObject = '{}',
         parser_job = false,
         maxWindows,
+        jar,
+        resetJar,
+        client,
         input,
         onActionError = 'continue',
         actionTimeoutMs = DEFAULT_ACTION_TIMEOUT_MS,
@@ -232,6 +248,9 @@ export class DataRequest {
         this.cerealObject = cerealObject;
         this.parser_job = parser_job;
         this.maxWindows = maxWindows;
+        this.jar = parseJarMode(jar);
+        this.resetJar = parseResetJar(resetJar);
+        this.client = parseClient(client);
         this.natural = parseNaturalInput(input);
         this.onActionError = onActionError === 'abort' ? 'abort' : 'continue';
         this.actionTimeoutMs = typeof actionTimeoutMs === 'number' && actionTimeoutMs > 0 ? actionTimeoutMs : DEFAULT_ACTION_TIMEOUT_MS;
@@ -302,6 +321,9 @@ export class DataRequest {
             cerealObject: json.cerealObject,
             parser_job: json.parser_job,
             maxWindows: json.maxWindows,
+            jar: parseJarMode(json.jar),
+            resetJar: parseResetJar(json.resetJar),
+            client: parseClient(json.client),
             input: json.input,
             onActionError: json.onActionError === 'abort' ? 'abort' : 'continue',
             actionTimeoutMs: json.actionTimeoutMs,
