@@ -2,7 +2,7 @@ import { BrowserWindow, session } from 'electron';
 import { Logger } from '../logger/logger';
 import TurndownService from 'turndown';
 import { Action, FormField, DataRequest } from './data-request';
-import { getWindowPool } from './window-pool';
+import { getWindowPool, getDefaultUserAgent } from './window-pool';
 import sharp from 'sharp';
 import * as os from 'os';
 
@@ -167,6 +167,10 @@ export async function processHtmlContent(htmlString: string, dataRequest: DataRe
                     );
                 }
 
+                if (dataRequest.userAgent) {
+                    win.webContents.setUserAgent(dataRequest.userAgent);
+                }
+
                 try {
             // Load the HTML content directly and wait for it to load
             await new Promise<void>((resolve, reject) => {
@@ -280,6 +284,9 @@ export async function processHtmlContent(htmlString: string, dataRequest: DataRe
             if (timeoutId) {
                 clearTimeout(timeoutId);
             }
+            if (dataRequest.userAgent) {
+                win.webContents.setUserAgent(getDefaultUserAgent());
+            }
         }
     });
 }
@@ -310,6 +317,10 @@ export async function processUrl(dataRequest: DataRequest): Promise<{ html: stri
 
                 // Note: User agent and session headers are already configured in the window pool
                 // This prevents accumulating event listeners on every request
+
+                if (dataRequest.userAgent) {
+                    win.webContents.setUserAgent(dataRequest.userAgent);
+                }
 
                 try {
             // Add stealth features to avoid bot detection and block UI dialogs
@@ -617,6 +628,9 @@ export async function processUrl(dataRequest: DataRequest): Promise<{ html: stri
         } finally {
             if (timeoutId) {
                 clearTimeout(timeoutId);
+            }
+            if (dataRequest.userAgent) {
+                win.webContents.setUserAgent(getDefaultUserAgent());
             }
         }
     });

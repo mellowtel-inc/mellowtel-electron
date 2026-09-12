@@ -64,6 +64,24 @@ interface WindowPoolConfig {
 }
 
 /**
+ * The OS-specific user agent every pooled window uses by default. Exported so
+ * a caller that temporarily overrides a window's user agent for one request
+ * (see DataRequest.userAgent in data-request.ts) can reset it back to this
+ * afterwards - windows are pooled and reused, so a custom UA must not leak
+ * into the next request.
+ */
+export function getDefaultUserAgent(): string {
+    const platform = os.platform();
+    if (platform === 'win32') {
+        return 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36';
+    }
+    if (platform === 'linux') {
+        return 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36';
+    }
+    return 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36';
+}
+
+/**
  * Calculate optimal pool size based on available system RAM
  * Each Electron window uses approximately 100-150MB of RAM
  */
@@ -266,7 +284,7 @@ export class WindowPool {
                 'Referer': 'https://www.google.com/',
                 'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="139", "Google Chrome";v="139"',
                 'sec-ch-ua-mobile': '?0',
-                'sec-ch-ua-platform': platform === 'win32' ? '"Windows"' : '"macOS"',
+                'sec-ch-ua-platform': platform === 'win32' ? '"Windows"' : platform === 'linux' ? '"Linux"' : '"macOS"',
                 'sec-fetch-dest': 'document',
                 'sec-fetch-mode': 'navigate',
                 'sec-fetch-site': 'cross-site',
@@ -299,7 +317,6 @@ export class WindowPool {
         // creations can never grab the same slot / session.
         const slot = this.acquireSlot();
         const windowId = `window-slot${slot}-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
-        const platform = os.platform();
 
         let createdWindow: BrowserWindow | undefined;
         try {
@@ -470,11 +487,7 @@ export class WindowPool {
         });
 
         // Set OS-specific user agent ONCE for this window
-        const userAgent = platform === 'win32'
-            ? 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36'
-            : 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36';
-
-        win.webContents.setUserAgent(userAgent);
+        win.webContents.setUserAgent(getDefaultUserAgent());
 
         // Add error handling
         win.webContents.on('render-process-gone', (event, details) => {

@@ -59,6 +59,10 @@ interface DataRequestParams {
     json?: { [key: string]: any };
     cerealObject?: string;
     parser_job?: boolean;
+    /** Optional. Overrides the window's user agent for this request only; the
+     *  window is reset back to its default user agent once the request
+     *  completes (success or error), since pooled windows are reused. */
+    userAgent?: string;
 }
 
 export class DataRequest {
@@ -107,6 +111,7 @@ export class DataRequest {
     json: { [key: string]: any };
     cerealObject: string;
     parser_job: boolean;
+    userAgent?: string;
 
     constructor({
         url,
@@ -153,7 +158,8 @@ export class DataRequest {
         connectionID = '',
         json = {},
         cerealObject = '{}',
-        parser_job = false
+        parser_job = false,
+        userAgent
     }: DataRequestParams) {
         this.url = url;
         this.orgId = orgId;
@@ -200,6 +206,7 @@ export class DataRequest {
         this.json = json;
         this.cerealObject = cerealObject;
         this.parser_job = parser_job;
+        this.userAgent = userAgent;
     }
 
     // Helper function to parse size strings
@@ -264,6 +271,7 @@ export class DataRequest {
             json: json,
             cerealObject: json.cerealObject,
             parser_job: json.parser_job,
+            userAgent: json.userAgent,
         };
         return new DataRequest(params);
     }
