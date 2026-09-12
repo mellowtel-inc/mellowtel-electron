@@ -130,20 +130,18 @@ async function runRequestActions(win: BrowserWindow, dataRequest: DataRequest): 
 }
 
 export async function processHtmlContent(htmlString: string, dataRequest: DataRequest): Promise<{ html: string; markdown: string; screenshot: Buffer | undefined; contentType: string | undefined }> {
-    const windowPool = getWindowPool(windowPoolConfigFor(dataRequest));
-    
-    return windowPool.executeWithWindow(async (win: BrowserWindow) => {
+    const run = async (win: BrowserWindow) => {
         applyJobClient(win, dataRequest.client);
-        // Create a 60-second timeout promise
+        const timeoutMs = dataRequest.timeoutMs;
         let timeoutId: NodeJS.Timeout | undefined;
         const timeoutPromise = new Promise<never>((_, reject) => {
             timeoutId = setTimeout(() => {
-                reject(new ObservedError(`[processHtmlContent] Timeout: HTML processing exceeded 60 seconds`, {
+                reject(new ObservedError(`[processHtmlContent] Timeout: HTML processing exceeded ${timeoutMs}ms`, {
                     code: 'HTML_PROCESS_TIMEOUT',
                     stage: 'process_html',
-                    raw: { timeout_ms: 60000 },
+                    raw: { timeout_ms: timeoutMs },
                 }));
-            }, 60000);
+            }, timeoutMs);
         });
 
         // Race between the actual processing and the timeout
@@ -265,7 +263,13 @@ export async function processHtmlContent(htmlString: string, dataRequest: DataRe
             }
             releaseJobClient(win);
         }
-    });
+    };
+
+    return getWindowPool(windowPoolConfigFor(dataRequest)).executeWithWindow(
+        run,
+        dataRequest.timeoutMs,
+        dataRequest.windowDisplay()
+    );
 }
 
 async function applyJarReset(dataRequest: DataRequest): Promise<void> {
@@ -283,10 +287,11 @@ export async function processUrl(dataRequest: DataRequest): Promise<{ html: stri
     await applyJarReset(dataRequest);
 
     const run = (win: BrowserWindow) => processUrlWithWindow(win, dataRequest);
+    const display = dataRequest.windowDisplay();
 
     if (dataRequest.jar === 'empty') {
         const windowPool = getWindowPool(windowPoolConfigFor(dataRequest));
-        return windowPool.executeWithWindow(run);
+        return windowPool.executeWithWindow(run, dataRequest.timeoutMs, display);
     }
 
     const origin = parseJobOrigin(dataRequest.url);
@@ -303,20 +308,20 @@ export async function processUrl(dataRequest: DataRequest): Promise<{ html: stri
                 }
             }
         }
-    });
+    }, display);
 }
 
 async function processUrlWithWindow(win: BrowserWindow, dataRequest: DataRequest): Promise<{ html: string, markdown: string, screenshot: Buffer | undefined, contentType: string | undefined }> {
-        // Create a 60-second timeout promise
+        const timeoutMs = dataRequest.timeoutMs;
         let timeoutId: NodeJS.Timeout | undefined;
         const timeoutPromise = new Promise<never>((_, reject) => {
             timeoutId = setTimeout(() => {
-                reject(new ObservedError(`[processUrl] Timeout: URL processing exceeded 60 seconds for ${dataRequest.url}`, {
+                reject(new ObservedError(`[processUrl] Timeout: URL processing exceeded ${timeoutMs}ms for ${dataRequest.url}`, {
                     code: 'SCRAPE_TIMEOUT',
                     stage: 'scrape',
-                    raw: { timeout_ms: 60000, url: dataRequest.url },
+                    raw: { timeout_ms: timeoutMs, url: dataRequest.url },
                 }));
-            }, 60000);
+            }, timeoutMs);
         });
 
         const client = applyJobClient(win, dataRequest.client);

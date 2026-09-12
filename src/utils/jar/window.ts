@@ -1,6 +1,6 @@
 import { BrowserWindow } from "electron";
 import { Logger } from "../../logger/logger";
-import { getDialogBlockPreloadPath } from "../window-pool";
+import { DEFAULT_WINDOW_DISPLAY, getDialogBlockPreloadPath, isDefaultWindowDisplay, WindowDisplay } from "../window-pool";
 import { getDeviceClient } from "../client";
 import { getJarSession, hasJarSession, withOriginLock, withPersistLock } from "./store";
 
@@ -31,7 +31,7 @@ export function resumeJarWindow(): void {
     shuttingDown = false;
 }
 
-function attachHardening(win: BrowserWindow): void {
+function attachHardening(win: BrowserWindow, display: WindowDisplay = DEFAULT_WINDOW_DISPLAY): void {
     win.webContents.on("will-prevent-unload", (event) => {
         Logger.log("[Jar] Prevented beforeunload dialog");
         event.preventDefault();
@@ -103,27 +103,29 @@ function attachHardening(win: BrowserWindow): void {
 
     win.webContents.setAudioMuted(true);
 
-    win.on("show", () => {
-        Logger.log("[Jar] Window attempted to show, hiding it");
-        win.setPosition(-10000, -10000);
-        win.hide();
-    });
-
-    win.on("focus", () => {
-        Logger.log("[Jar] Window attempted to focus, hiding it");
-        win.blur();
-        win.hide();
-    });
-
-    if (visibilityCheck) {
-        clearInterval(visibilityCheck);
-    }
-    visibilityCheck = setInterval(() => {
-        if (win && !win.isDestroyed() && win.isVisible()) {
-            Logger.log("[Jar] Window became visible, hiding it immediately");
+    if (!display.visible) {
+        win.on("show", () => {
+            Logger.log("[Jar] Window attempted to show, hiding it");
+            win.setPosition(-10000, -10000);
             win.hide();
+        });
+
+        win.on("focus", () => {
+            Logger.log("[Jar] Window attempted to focus, hiding it");
+            win.blur();
+            win.hide();
+        });
+
+        if (visibilityCheck) {
+            clearInterval(visibilityCheck);
         }
-    }, 100);
+        visibilityCheck = setInterval(() => {
+            if (win && !win.isDestroyed() && win.isVisible()) {
+                Logger.log("[Jar] Window became visible, hiding it immediately");
+                win.hide();
+            }
+        }, 100);
+    }
 
     win.on("closed", () => {
         if (visibilityCheck) {
@@ -146,16 +148,15 @@ function attachHardening(win: BrowserWindow): void {
     });
 }
 
-function createJarWindow(): BrowserWindow {
+function createJarWindow(display: WindowDisplay = DEFAULT_WINDOW_DISPLAY): BrowserWindow {
     const win = new BrowserWindow({
-        show: false,
+        show: display.visible,
         width: 1709,
         height: 984,
-        x: -10000,
-        y: -10000,
-        focusable: false,
+        ...(display.visible ? {} : { x: -10000, y: -10000 }),
+        focusable: display.visible,
         webPreferences: {
-            offscreen: true,
+            offscreen: display.offscreen,
             nodeIntegration: false,
             contextIsolation: false,
             nodeIntegrationInSubFrames: true,
@@ -169,8 +170,8 @@ function createJarWindow(): BrowserWindow {
             spellcheck: false,
         },
     });
-    attachHardening(win);
-    Logger.log("[Jar] Created persist-backed window");
+    attachHardening(win, display);
+    Logger.log(`[Jar] Created persist-backed window (visible=${display.visible}, offscreen=${display.offscreen})`);
     return win;
 }
 
@@ -197,7 +198,8 @@ async function cleanupJarWindow(win: BrowserWindow): Promise<void> {
 
 export async function executeWithJarWindow<T>(
     origin: string,
-    task: (window: BrowserWindow) => Promise<T>
+    task: (window: BrowserWindow) => Promise<T>,
+    display: WindowDisplay = DEFAULT_WINDOW_DISPLAY
 ): Promise<T> {
     if (shuttingDown) {
         throw new Error("[Jar] Cannot accept work while shut down");
@@ -207,6 +209,25 @@ export async function executeWithJarWindow<T>(
         withOriginLock(origin, async () => {
             if (shuttingDown) {
                 throw new Error("[Jar] Cannot accept work while shut down");
+            }
+
+            if (!isDefaultWindowDisplay(display)) {
+                if (jarWindow && !jarWindow.isDestroyed()) {
+                    jarWindow.destroy();
+                }
+                jarWindow = undefined;
+                const win = createJarWindow(display);
+                try {
+                    return await task(win);
+                } catch (error) {
+                    Logger.error(`[Jar] Error in window, destroying it: ${error}`);
+                    throw error;
+                } finally {
+                    if (!win.isDestroyed()) {
+                        win.destroy();
+                    }
+                    jarWindow = undefined;
+                }
             }
 
             const win = getOrCreateJarWindow();

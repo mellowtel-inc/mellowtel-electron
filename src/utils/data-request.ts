@@ -18,6 +18,39 @@ interface Size {
     height: number;
 }
 
+export const DEFAULT_SCRAPE_TIMEOUT_MS = 60_000;
+
+/** timeoutMs is milliseconds. timeout values under 1000 are treated as seconds. */
+export function parseTimeoutMs(timeoutMs: unknown, timeout?: unknown): number | undefined {
+    const fromMs = toPositiveNumber(timeoutMs);
+    if (fromMs !== undefined) {
+        return fromMs;
+    }
+    const fromTimeout = toPositiveNumber(timeout);
+    if (fromTimeout === undefined) {
+        return undefined;
+    }
+    return fromTimeout < 1000 ? fromTimeout * 1000 : fromTimeout;
+}
+
+function toPositiveNumber(value: unknown): number | undefined {
+    const n = typeof value === 'string' ? Number(value) : value;
+    if (typeof n !== 'number' || !Number.isFinite(n) || n <= 0) {
+        return undefined;
+    }
+    return n;
+}
+
+function parseOptionalBool(value: unknown): boolean | undefined {
+    if (value === true || value === 'true' || value === 1 || value === '1') {
+        return true;
+    }
+    if (value === false || value === 'false' || value === 0 || value === '0') {
+        return false;
+    }
+    return undefined;
+}
+
 export type { Action, ActionJobSettings, ActionResult, TypingConfig };
 
 export interface FormField {
@@ -90,6 +123,12 @@ interface DataRequestParams {
     input?: InputStyle;
     onActionError?: OnActionError;
     actionTimeoutMs?: number;
+    /** Hard cap for scrape / HTML processing. Default 60s. */
+    timeoutMs?: number;
+    /** Show the scrape window. Default false. Forces offscreen off. */
+    visible?: boolean;
+    /** Electron offscreen rendering. Default true. */
+    offscreen?: boolean;
     typing?: TypingConfig;
 }
 
@@ -147,6 +186,9 @@ export class DataRequest {
     natural: boolean;
     onActionError: OnActionError;
     actionTimeoutMs: number;
+    timeoutMs: number;
+    visible: boolean;
+    offscreen: boolean;
     typing: TypingConfig;
     actionResults: ActionResult[];
 
@@ -204,6 +246,9 @@ export class DataRequest {
         input,
         onActionError = 'continue',
         actionTimeoutMs = DEFAULT_ACTION_TIMEOUT_MS,
+        timeoutMs = DEFAULT_SCRAPE_TIMEOUT_MS,
+        visible = false,
+        offscreen = true,
         typing
     }: DataRequestParams) {
         this.url = url;
@@ -259,6 +304,9 @@ export class DataRequest {
         this.natural = parseNaturalInput(input);
         this.onActionError = onActionError === 'abort' ? 'abort' : 'continue';
         this.actionTimeoutMs = typeof actionTimeoutMs === 'number' && actionTimeoutMs > 0 ? actionTimeoutMs : DEFAULT_ACTION_TIMEOUT_MS;
+        this.timeoutMs = typeof timeoutMs === 'number' && timeoutMs > 0 ? timeoutMs : DEFAULT_SCRAPE_TIMEOUT_MS;
+        this.visible = visible === true;
+        this.offscreen = this.visible ? false : offscreen !== false;
         this.typing = typing ?? parseTypingConfig(undefined, this.natural);
         this.actionResults = [];
     }
@@ -333,6 +381,9 @@ export class DataRequest {
             input: json.input,
             onActionError: json.onActionError === 'abort' ? 'abort' : 'continue',
             actionTimeoutMs: json.actionTimeoutMs,
+            timeoutMs: parseTimeoutMs(json.timeoutMs, json.timeout),
+            visible: parseOptionalBool(json.visible ?? json.show),
+            offscreen: parseOptionalBool(json.offscreen),
             typing: parseTypingConfig(json.typing, parseNaturalInput(json.input)),
         };
         return new DataRequest(params);
@@ -345,5 +396,9 @@ export class DataRequest {
             actionTimeoutMs: this.actionTimeoutMs,
             typing: this.typing,
         };
+    }
+
+    windowDisplay(): { visible: boolean; offscreen: boolean } {
+        return { visible: this.visible, offscreen: this.offscreen };
     }
 }
