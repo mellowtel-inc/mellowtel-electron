@@ -1,7 +1,8 @@
 import { BrowserWindow, session } from 'electron';
 import { Logger } from '../logger/logger';
 import TurndownService from 'turndown';
-import { Action, FormField, DataRequest } from './data-request';
+import { DataRequest } from './data-request';
+import { runActions } from './actions';
 import { getWindowPool } from './window-pool';
 import sharp from 'sharp';
 import * as os from 'os';
@@ -89,58 +90,12 @@ async function takeFullPageScreenshot(win: BrowserWindow): Promise<Buffer> {
     }).toBuffer();
 }
 
-async function executeAction(action: Action, win: BrowserWindow): Promise<void> {
-    switch (action.type) {
-        case "wait":
-            await delay(action.milliseconds);
-            break;
-        case "click":
-            await win.webContents.executeJavaScript(`document.querySelector("${action.selector}").click();`);
-            break;
-        case "write":
-            await win.webContents.executeJavaScript(`
-                const activeElement = document.activeElement;
-                if (activeElement && "value" in activeElement) {
-                    const start = activeElement.selectionStart || 0;
-                    const end = activeElement.selectionEnd || 0;
-                    activeElement.value = activeElement.value.substring(0, start) + "${action.text}" + activeElement.value.substring(end);
-                    activeElement.selectionStart = activeElement.selectionEnd = start + "${action.text}".length;
-                }
-            `);
-            break;
-        case "fill_input":
-            await win.webContents.executeJavaScript(`document.querySelector("${action.selector}").value = "${action.value}";`);
-            break;
-        case "fill_textarea":
-            await win.webContents.executeJavaScript(`document.querySelector("${action.selector}").value = "${action.value}";`);
-            break;
-        case "select":
-            await win.webContents.executeJavaScript(`document.querySelector("${action.selector}").value = "${action.value}";`);
-            break;
-        case "fill_form":
-            await win.webContents.executeJavaScript(`
-                const formElement = document.querySelector("${action.selector}");
-                if (formElement) {
-                    const formData = new FormData(formElement);
-                    ${action.fields.map((field: FormField) => `formData.set("${field.name}", "${field.value}");`).join('')}
-                }
-            `);
-            break;
-        case "press":
-            await win.webContents.executeJavaScript(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "${action.key}" }));`);
-            break;
-        case "scroll":
-            await win.webContents.executeJavaScript(`
-                window.scrollBy({
-                    top: ${action.direction === "up" ? -action.amount : action.amount},
-                    left: ${action.direction === "left" ? -action.amount : action.direction === "right" ? action.amount : 0},
-                    behavior: "smooth",
-                });
-            `);
-            break;
-        default:
-            Logger.log(`[executeAction]: Unknown action type: ${action.type}`);
+async function runRequestActions(win: BrowserWindow, dataRequest: DataRequest): Promise<void> {
+    if (!dataRequest.actions || dataRequest.actions.length === 0) {
+        return;
     }
+    Logger.log(`[actions]: running ${dataRequest.actions.length} step(s)`);
+    dataRequest.actionResults = await runActions(win, dataRequest.actions, dataRequest.actionSettings());
 }
 
 export async function processHtmlContent(htmlString: string, dataRequest: DataRequest): Promise<{ html: string; markdown: string; screenshot: Buffer | undefined; contentType: string | undefined }> {
@@ -219,15 +174,7 @@ export async function processHtmlContent(htmlString: string, dataRequest: DataRe
                 Logger.log(`[processHtmlContent]: CSS selectors removed`);
             }
 
-            // Execute actions if specified
-            if (dataRequest.actions && dataRequest.actions.length > 0) {
-                Logger.log(`[processHtmlContent]: Executing ${dataRequest.actions.length} actions`);
-                for (const action of dataRequest.actions) {
-                    Logger.log(`[processHtmlContent]: Executing action: ${JSON.stringify(action)}`);
-                    await executeAction(action, win);
-                }
-                Logger.log(`[processHtmlContent]: Actions executed`);
-            }
+            await runRequestActions(win, dataRequest);
 
             // Get the processed HTML content
             const content = await win.webContents.executeJavaScript('document.documentElement.outerHTML');
@@ -563,15 +510,7 @@ export async function processUrl(dataRequest: DataRequest): Promise<{ html: stri
                 Logger.log(`[processUrl]: CSS selectors removed`);
             }
 
-            // Execute actions if specified
-            if (dataRequest.actions && dataRequest.actions.length > 0) {
-                Logger.log(`[processUrl]: Executing ${dataRequest.actions.length} actions`);
-                for (const action of dataRequest.actions) {
-                    Logger.log(`[processUrl]: Executing action: ${JSON.stringify(action)}`);
-                    await executeAction(action, win);
-                }
-                Logger.log(`[processUrl]: Actions executed`);
-            }
+            await runRequestActions(win, dataRequest);
 
             // Get the processed HTML content
             const content = await win.webContents.executeJavaScript('document.documentElement.outerHTML');

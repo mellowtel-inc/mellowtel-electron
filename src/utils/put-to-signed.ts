@@ -96,7 +96,9 @@ export async function saveCrawl(
     saveHtml: datarequest.saveHtml,
     saveMarkdown: datarequest.saveMarkdown,
     cereal_result: JSON.stringify({ "data": cereal_result, "success": true }),
-    file_name_bytes: file_name_bytes
+    file_name_bytes: file_name_bytes,
+    actionResults: datarequest.actionResults || [],
+    actionsFailed: (datarequest.actionResults || []).some((r) => r.status === "failed" || r.status === "timeout")
   };
   
   // For parser jobs, only send JSON and skip HTML/markdown

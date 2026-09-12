@@ -1,16 +1,26 @@
+import {
+    Action,
+    ActionJobSettings,
+    ActionResult,
+    DEFAULT_ACTION_TIMEOUT_MS,
+    InputStyle,
+    OnActionError,
+    parseActions,
+    parseNaturalInput,
+    parseTypingConfig,
+    TypingConfig,
+} from "./actions/types";
+
 interface Size {
     width: number;
     height: number;
 }
 
+export type { Action, ActionJobSettings, ActionResult, TypingConfig };
+
 export interface FormField {
     name: string;
     value: string;
-}
-
-export interface Action {
-    type: string;
-    [key: string]: any;
 }
 
 interface DataRequestParams {
@@ -59,6 +69,10 @@ interface DataRequestParams {
     json?: { [key: string]: any };
     cerealObject?: string;
     parser_job?: boolean;
+    input?: InputStyle;
+    onActionError?: OnActionError;
+    actionTimeoutMs?: number;
+    typing?: TypingConfig;
 }
 
 export class DataRequest {
@@ -107,6 +121,11 @@ export class DataRequest {
     json: { [key: string]: any };
     cerealObject: string;
     parser_job: boolean;
+    natural: boolean;
+    onActionError: OnActionError;
+    actionTimeoutMs: number;
+    typing: TypingConfig;
+    actionResults: ActionResult[];
 
     constructor({
         url,
@@ -153,7 +172,11 @@ export class DataRequest {
         connectionID = '',
         json = {},
         cerealObject = '{}',
-        parser_job = false
+        parser_job = false,
+        input,
+        onActionError = 'continue',
+        actionTimeoutMs = DEFAULT_ACTION_TIMEOUT_MS,
+        typing
     }: DataRequestParams) {
         this.url = url;
         this.orgId = orgId;
@@ -200,6 +223,11 @@ export class DataRequest {
         this.json = json;
         this.cerealObject = cerealObject;
         this.parser_job = parser_job;
+        this.natural = parseNaturalInput(input);
+        this.onActionError = onActionError === 'abort' ? 'abort' : 'continue';
+        this.actionTimeoutMs = typeof actionTimeoutMs === 'number' && actionTimeoutMs > 0 ? actionTimeoutMs : DEFAULT_ACTION_TIMEOUT_MS;
+        this.typing = typing ?? parseTypingConfig(undefined, this.natural);
+        this.actionResults = [];
     }
 
     // Helper function to parse size strings
@@ -249,7 +277,7 @@ export class DataRequest {
             method_payload: json.method_payload,
             method_headers: parsed_headers,
             fetchInstead: json.fetchInstead,
-            actions: json.actions ? JSON.parse(json.actions) : [],
+            actions: parseActions(json.actions),
             rawData: json.rawData,
             refPolicy: json.refPolicy,
             htmlContained: json.htmlContained,
@@ -264,7 +292,20 @@ export class DataRequest {
             json: json,
             cerealObject: json.cerealObject,
             parser_job: json.parser_job,
+            input: json.input,
+            onActionError: json.onActionError === 'abort' ? 'abort' : 'continue',
+            actionTimeoutMs: json.actionTimeoutMs,
+            typing: parseTypingConfig(json.typing, parseNaturalInput(json.input)),
         };
         return new DataRequest(params);
+    }
+
+    actionSettings(): ActionJobSettings {
+        return {
+            natural: this.natural,
+            onActionError: this.onActionError,
+            actionTimeoutMs: this.actionTimeoutMs,
+            typing: this.typing,
+        };
     }
 }
