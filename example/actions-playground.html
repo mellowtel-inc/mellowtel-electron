@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Actions playground</title>
+  <style>
+    :root { font-family: ui-sans-serif, system-ui, sans-serif; color: #111; }
+    body { margin: 0; background: #f4f4f1; }
+    header {
+      position: sticky; top: 0; z-index: 10;
+      display: flex; justify-content: space-between; gap: 16px;
+      padding: 12px 20px; background: #111; color: #fff;
+    }
+    #scenario { font-weight: 700; }
+    #page-log { font-size: 12px; opacity: 0.85; }
+    main { max-width: 880px; margin: 0 auto; padding: 24px 20px 80px; }
+    section { background: #fff; border: 1px solid #ddd; border-radius: 10px; padding: 16px 18px; margin-bottom: 16px; }
+    h2 { margin: 0 0 12px; font-size: 16px; }
+    label { display: block; margin: 8px 0 4px; font-size: 13px; }
+    input[type="text"], select { width: 280px; padding: 8px; }
+    button, .chip {
+      padding: 8px 12px; margin: 4px 4px 4px 0; border: 1px solid #bbb;
+      background: #fafafa; border-radius: 6px; cursor: pointer;
+    }
+    button.primary { background: #1f6feb; color: #fff; border-color: #1f6feb; }
+    #results { min-height: 36px; padding: 8px; background: #f7f7f4; border-radius: 6px; }
+    #menu { display: inline-block; position: relative; padding: 8px 14px; background: #eee; border-radius: 6px; }
+    #menu-list { display: none; position: absolute; left: 0; top: 100%; background: #fff; border: 1px solid #ccc; min-width: 160px; }
+    #menu:hover #menu-list, #menu.open #menu-list { display: block; }
+    #menu-list a { display: block; padding: 8px 10px; text-decoration: none; color: #111; }
+    #menu-list a:hover { background: #eef; }
+    #feed { max-height: 220px; overflow: auto; border: 1px solid #ddd; padding: 8px; }
+    .item { padding: 10px 0; border-bottom: 1px solid #eee; }
+    #tall { height: 1400px; background: linear-gradient(#fff, #d9e8ff); padding-top: 16px; }
+    #footer-card { margin-top: 1200px; padding: 16px; background: #123; color: #fff; border-radius: 8px; }
+    #track { position: relative; height: 12px; background: #ddd; border-radius: 8px; margin: 28px 0; }
+    #knob {
+      position: absolute; top: -8px; left: 0; width: 28px; height: 28px;
+      background: #1f6feb; border-radius: 50%; cursor: grab;
+    }
+    #dbl { width: 180px; height: 70px; display: grid; place-items: center; background: #ffe8a3; border: 1px dashed #c90; }
+    iframe { width: 100%; height: 90px; border: 1px solid #ccc; }
+  </style>
+</head>
+<body>
+  <header>
+    <div id="scenario">idle</div>
+    <div id="page-log">page events will show here</div>
+  </header>
+  <main>
+    <section>
+      <h2>Search</h2>
+      <label for="q">Query</label>
+      <input id="q" name="q" type="text" placeholder="type here" />
+      <button id="go" class="primary" type="button">Search</button>
+      <div id="results">No results yet.</div>
+    </section>
+
+    <section>
+      <h2>Filters</h2>
+      <label for="country">Country</label>
+      <select id="country">
+        <option value="">Select</option>
+        <option value="us">United States</option>
+        <option value="de">Germany</option>
+        <option value="jp">Japan</option>
+      </select>
+      <label><input id="facet" type="checkbox" /> Open data only</label>
+    </section>
+
+    <section>
+      <h2>Hover menu</h2>
+      <div id="menu">Topics
+        <div id="menu-list">
+          <a id="topic-datasets" href="#datasets">Datasets</a>
+          <a id="topic-apis" href="#apis">APIs</a>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Feed</h2>
+      <div id="feed">
+        <div class="item">Item 1</div>
+        <div class="item">Item 2</div>
+        <div class="item">Item 3</div>
+      </div>
+      <button id="load-more" type="button">Load more</button>
+    </section>
+
+    <section>
+      <h2>Double click</h2>
+      <div id="dbl">Double-click me</div>
+    </section>
+
+    <section>
+      <h2>Slider</h2>
+      <div id="track"><div id="knob"></div></div>
+      <div id="knob-value">0</div>
+    </section>
+
+    <section>
+      <h2>Extract targets</h2>
+      <h1 id="title">Playground title</h1>
+      <a id="docs-link" href="https://example.com/docs">Docs</a>
+      <script id="page-json" type="application/ld+json">{"name":"playground","ok":true}</script>
+    </section>
+
+    <section>
+      <h2>Frame</h2>
+      <iframe id="child" srcdoc="<p id='inner'>Frame text</p><button id='inner-btn'>Inner</button>"></iframe>
+    </section>
+
+    <section id="tall">
+      <h2>Long page</h2>
+      <p>Scroll down to the footer card.</p>
+      <div id="footer-card">Footer card</div>
+    </section>
+  </main>
+  <script>
+    const logEl = document.getElementById('page-log');
+    const note = (msg) => { logEl.textContent = msg; console.log('[page]', msg); };
+
+    document.getElementById('go').addEventListener('click', () => {
+      const q = document.getElementById('q').value;
+      document.getElementById('results').textContent = 'Results for: ' + q;
+      note('search clicked: ' + q);
+    });
+    document.getElementById('q').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') document.getElementById('go').click();
+    });
+    document.getElementById('country').addEventListener('change', (e) => note('country=' + e.target.value));
+    document.getElementById('facet').addEventListener('change', (e) => note('facet=' + e.target.checked));
+    document.getElementById('topic-datasets').addEventListener('click', (e) => { e.preventDefault(); note('topic=datasets'); });
+    document.getElementById('topic-apis').addEventListener('click', (e) => { e.preventDefault(); note('topic=apis'); });
+
+    let n = 3;
+    document.getElementById('load-more').addEventListener('click', () => {
+      n += 1;
+      const item = document.createElement('div');
+      item.className = 'item';
+      item.textContent = 'Item ' + n;
+      document.getElementById('feed').appendChild(item);
+      note('loaded item ' + n);
+    });
+
+    document.getElementById('dbl').addEventListener('dblclick', () => {
+      document.getElementById('dbl').textContent = 'Opened';
+      note('double-clicked');
+    });
+
+    const knob = document.getElementById('knob');
+    const track = document.getElementById('track');
+    let drag = false;
+    const setKnob = (clientX) => {
+      const rect = track.getBoundingClientRect();
+      const x = Math.max(0, Math.min(rect.width - 28, clientX - rect.left - 14));
+      knob.style.left = x + 'px';
+      document.getElementById('knob-value').textContent = String(Math.round((x / (rect.width - 28)) * 100));
+    };
+    knob.addEventListener('mousedown', () => { drag = true; });
+    window.addEventListener('mousemove', (e) => { if (drag) setKnob(e.clientX); });
+    window.addEventListener('mouseup', () => { if (drag) { drag = false; note('knob=' + document.getElementById('knob-value').textContent); } });
+  </script>
+</body>
+</html>

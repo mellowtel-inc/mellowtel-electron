@@ -4,6 +4,7 @@
   "main": "main.js",
   "scripts": {
     "start": "npx tsc && electron .",
+    "playground": "cd .. && npm run test:actions",
     "build": "npx tsc",
     "test": "echo \"Error: no test specified\" && exit 1"
   },

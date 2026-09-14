@@ -1,16 +1,61 @@
+import {
+    Action,
+    ActionJobSettings,
+    ActionResult,
+    DEFAULT_ACTION_TIMEOUT_MS,
+    InputStyle,
+    OnActionError,
+    parseActions,
+    parseNaturalInput,
+    parseTypingConfig,
+    TypingConfig,
+} from "./actions/types";
+import { JarMode, parseJarMode, parseResetJar, ResetJar } from "./jar/types";
+import { ClientConfig, parseClient } from "./client";
+
 interface Size {
     width: number;
     height: number;
 }
 
+export const DEFAULT_SCRAPE_TIMEOUT_MS = 60_000;
+
+/** timeoutMs is milliseconds. timeout values under 1000 are treated as seconds. */
+export function parseTimeoutMs(timeoutMs: unknown, timeout?: unknown): number | undefined {
+    const fromMs = toPositiveNumber(timeoutMs);
+    if (fromMs !== undefined) {
+        return fromMs;
+    }
+    const fromTimeout = toPositiveNumber(timeout);
+    if (fromTimeout === undefined) {
+        return undefined;
+    }
+    return fromTimeout < 1000 ? fromTimeout * 1000 : fromTimeout;
+}
+
+function toPositiveNumber(value: unknown): number | undefined {
+    const n = typeof value === 'string' ? Number(value) : value;
+    if (typeof n !== 'number' || !Number.isFinite(n) || n <= 0) {
+        return undefined;
+    }
+    return n;
+}
+
+function parseOptionalBool(value: unknown): boolean | undefined {
+    if (value === true || value === 'true' || value === 1 || value === '1') {
+        return true;
+    }
+    if (value === false || value === 'false' || value === 0 || value === '0') {
+        return false;
+    }
+    return undefined;
+}
+
+export type { Action, ActionJobSettings, ActionResult, TypingConfig };
+
 export interface FormField {
     name: string;
     value: string;
-}
-
-export interface Action {
-    type: string;
-    [key: string]: any;
 }
 
 interface DataRequestParams {
@@ -55,6 +100,8 @@ interface DataRequestParams {
     divContained?: boolean;
     aristotele?: boolean;
     save_html_endpoint?: string;
+    /** Per-job URL that receives structured error reports. Empty = do not POST. */
+    error_callback_endpoint?: string;
     connectionID?: string;
     json?: { [key: string]: any };
     cerealObject?: string;
@@ -65,6 +112,24 @@ interface DataRequestParams {
      *  singleton, so only the value from whichever request initializes the
      *  pool actually takes effect. */
     maxWindows?: number;
+    /** empty: ignore stored origin data. reuse: load, do not keep this visit's cookies.
+     *  update: load and keep this visit. Default empty. */
+    jar?: JarMode;
+    /** Wipe stored jar data before load. origin uses this job's URL. Default none. */
+    resetJar?: ResetJar;
+    /** Optional per-scrape presentation overlay. Omitted fields use the device
+     *  helper (UA, locale, hardware) plus current scrape defaults. */
+    client?: ClientConfig;
+    input?: InputStyle;
+    onActionError?: OnActionError;
+    actionTimeoutMs?: number;
+    /** Hard cap for scrape / HTML processing. Default 60s. */
+    timeoutMs?: number;
+    /** Show the scrape window. Default false. Forces offscreen off. */
+    visible?: boolean;
+    /** Electron offscreen rendering. Default true. */
+    offscreen?: boolean;
+    typing?: TypingConfig;
     /** Optional. JSON string enabling per-request network capture: an
      *  endpoint plus include/exclude URL glob filters. See parseBurkeObject
      *  in meucci-helpers.ts. Absent or "{}" means capture is off. */
@@ -113,11 +178,23 @@ export class DataRequest {
     divContained: boolean;
     aristotele: boolean;
     save_html_endpoint: string;
+    error_callback_endpoint: string;
     connectionID: string;
     json: { [key: string]: any };
     cerealObject: string;
     parser_job: boolean;
     maxWindows?: number;
+    jar: JarMode;
+    resetJar: ResetJar;
+    client: ClientConfig;
+    natural: boolean;
+    onActionError: OnActionError;
+    actionTimeoutMs: number;
+    timeoutMs: number;
+    visible: boolean;
+    offscreen: boolean;
+    typing: TypingConfig;
+    actionResults: ActionResult[];
     burkeObject?: string;
 
     constructor({
@@ -162,11 +239,22 @@ export class DataRequest {
         divContained = false,
         aristotele = false,
         save_html_endpoint = 'https://request.mellow.tel/',
+        error_callback_endpoint = '',
         connectionID = '',
         json = {},
         cerealObject = '{}',
         parser_job = false,
         maxWindows,
+        jar,
+        resetJar,
+        client,
+        input,
+        onActionError = 'continue',
+        actionTimeoutMs = DEFAULT_ACTION_TIMEOUT_MS,
+        timeoutMs = DEFAULT_SCRAPE_TIMEOUT_MS,
+        visible = false,
+        offscreen = true,
+        typing,
         burkeObject
     }: DataRequestParams) {
         this.url = url;
@@ -210,11 +298,23 @@ export class DataRequest {
         this.divContained = divContained;
         this.aristotele = aristotele;
         this.save_html_endpoint = save_html_endpoint;
+        this.error_callback_endpoint = error_callback_endpoint || '';
         this.connectionID = connectionID;
         this.json = json;
         this.cerealObject = cerealObject;
         this.parser_job = parser_job;
         this.maxWindows = maxWindows;
+        this.jar = parseJarMode(jar);
+        this.resetJar = parseResetJar(resetJar);
+        this.client = parseClient(client);
+        this.natural = parseNaturalInput(input);
+        this.onActionError = onActionError === 'abort' ? 'abort' : 'continue';
+        this.actionTimeoutMs = typeof actionTimeoutMs === 'number' && actionTimeoutMs > 0 ? actionTimeoutMs : DEFAULT_ACTION_TIMEOUT_MS;
+        this.timeoutMs = typeof timeoutMs === 'number' && timeoutMs > 0 ? timeoutMs : DEFAULT_SCRAPE_TIMEOUT_MS;
+        this.visible = visible === true;
+        this.offscreen = this.visible ? false : offscreen !== false;
+        this.typing = typing ?? parseTypingConfig(undefined, this.natural);
+        this.actionResults = [];
         this.burkeObject = burkeObject;
     }
 
@@ -265,7 +365,7 @@ export class DataRequest {
             method_payload: json.method_payload,
             method_headers: parsed_headers,
             fetchInstead: json.fetchInstead,
-            actions: json.actions ? JSON.parse(json.actions) : [],
+            actions: parseActions(json.actions),
             rawData: json.rawData,
             refPolicy: json.refPolicy,
             htmlContained: json.htmlContained,
@@ -276,13 +376,37 @@ export class DataRequest {
             divContained: json.divContained,
             aristotele: json.aristotele,
             save_html_endpoint: json.save_html_endpoint,
+            error_callback_endpoint: json.error_callback_endpoint || json.error_endpoint || '',
             connectionID: json.connectionID,
             json: json,
             cerealObject: json.cerealObject,
             parser_job: json.parser_job,
             maxWindows: json.maxWindows,
+            jar: parseJarMode(json.jar),
+            resetJar: parseResetJar(json.resetJar),
+            client: parseClient(json.client),
+            input: json.input,
+            onActionError: json.onActionError === 'abort' ? 'abort' : 'continue',
+            actionTimeoutMs: json.actionTimeoutMs,
+            timeoutMs: parseTimeoutMs(json.timeoutMs, json.timeout),
+            visible: parseOptionalBool(json.visible ?? json.show),
+            offscreen: parseOptionalBool(json.offscreen),
+            typing: parseTypingConfig(json.typing, parseNaturalInput(json.input)),
             burkeObject: json.burkeObject,
         };
         return new DataRequest(params);
+    }
+
+    actionSettings(): ActionJobSettings {
+        return {
+            natural: this.natural,
+            onActionError: this.onActionError,
+            actionTimeoutMs: this.actionTimeoutMs,
+            typing: this.typing,
+        };
+    }
+
+    windowDisplay(): { visible: boolean; offscreen: boolean } {
+        return { visible: this.visible, offscreen: this.offscreen };
     }
 }

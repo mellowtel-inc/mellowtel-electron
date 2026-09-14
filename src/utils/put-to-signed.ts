@@ -1,4 +1,5 @@
 import { Logger } from "../logger/logger";
+import { ObservedError } from "../observability/observed-error";
 import { DataRequest } from "./data-request";
 import { getIdentifier } from "./identity-helpers";
 
@@ -20,7 +21,11 @@ export async function getS3SignedUrls(recordID: string, contentType: string): Pr
   if (!response.ok) {
     const errorText = await response.text();
     Logger.error(`[getS3SignedUrls]: Network response was not ok: ${errorText}`);
-    throw new Error(`[getS3SignedUrls]: Network response was not ok: ${errorText}`);
+    throw new ObservedError(`[getS3SignedUrls]: Network response was not ok: ${errorText}`, {
+      code: 'S3_SIGN_FAILED',
+      stage: 's3',
+      raw: { status: response.status, statusText: response.statusText, body: errorText },
+    });
   }
   const data = await response.json();
   Logger.log("[getS3SignedUrls]: Response from server:", data);
@@ -48,7 +53,11 @@ export async function uploadToS3(
   if (!response.ok) {
     const errorText = await response.text();
     Logger.error(`[uploadToS3]: S3 upload failed with status ${response.status}. Response: ${errorText}`);
-    throw new Error(`[uploadToS3]: S3 upload failed. ${errorText}`);
+    throw new ObservedError(`[uploadToS3]: S3 upload failed. ${errorText}`, {
+      code: 'S3_UPLOAD_FAILED',
+      stage: 's3',
+      raw: { status: response.status, statusText: response.statusText, body: errorText },
+    });
   }
 
   Logger.log("[uploadToS3]: Response from server:", response.status, response.statusText);
@@ -64,7 +73,8 @@ export async function saveCrawl(
   batch_id: string,
   website_unreachable: boolean = false,
   cereal_result: any = {},
-  file_name_bytes: string = ""
+  file_name_bytes: string = "",
+  cereal_success: boolean = true
 ) {
   Logger.log("📋 Saving Crawl 📋");
   Logger.log("RecordID:", datarequest.recordID);
@@ -95,8 +105,10 @@ export async function saveCrawl(
     requestMessageInfo: datarequest.json,
     saveHtml: datarequest.saveHtml,
     saveMarkdown: datarequest.saveMarkdown,
-    cereal_result: JSON.stringify({ "data": cereal_result, "success": true }),
-    file_name_bytes: file_name_bytes
+    cereal_result: JSON.stringify({ "data": cereal_result, "success": cereal_success }),
+    file_name_bytes: file_name_bytes,
+    actionResults: datarequest.actionResults || [],
+    actionsFailed: (datarequest.actionResults || []).some((r) => r.status === "failed" || r.status === "timeout")
   };
   
   // For parser jobs, only send JSON and skip HTML/markdown
@@ -125,13 +137,25 @@ export async function saveCrawl(
     if (!response.ok) {
       const errorText = await response.text();
       Logger.error(`[saveCrawl] Network response was not ok: ${errorText}`);
-      throw new Error(`[saveCrawl] Network response was not ok: ${errorText}`);
+      throw new ObservedError(`[saveCrawl] Network response was not ok: ${errorText}`, {
+        code: 'SAVE_CRAWL_FAILED',
+        stage: 'save_crawl',
+        raw: { status: response.status, statusText: response.statusText, body: errorText, endpoint },
+      });
     }
     const data = await response.json();
     Logger.log("Response from server:", data);
     return data;
   } catch (error) {
     Logger.error("Error in saveCrawl:", error);
-    throw error;
+    if (error instanceof ObservedError) {
+      throw error;
+    }
+    throw new ObservedError(`Error in saveCrawl: ${error}`, {
+      code: 'SAVE_CRAWL_FAILED',
+      stage: 'save_crawl',
+      raw: { endpoint, error: String(error) },
+      cause: error,
+    });
   }
 }

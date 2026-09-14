@@ -1,11 +1,13 @@
 import { BrowserWindow, session, app, Session } from 'electron';
 import { Logger } from '../logger/logger';
-import * as os from 'os';
+import { ObservedError } from '../observability/observed-error';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
 import pLimit from 'p-limit';
 import { DIALOG_BLOCK_SOURCE } from './dialog-block-source';
+import { attachClientHeaderHook, getDeviceClient } from './client';
+import { DEFAULT_SCRAPE_TIMEOUT_MS } from './data-request';
 
 // Preload that stubs alert/confirm/prompt before page scripts run (fixes
 // Windows dialog leak). DIALOG_BLOCK_SOURCE is a string constant imported
@@ -15,7 +17,7 @@ import { DIALOG_BLOCK_SOURCE } from './dialog-block-source';
 // even when host apps bundle their main process (webpack, vite, esbuild).
 let cachedDialogPreloadPath: string | null = null;
 
-function getDialogBlockPreloadPath(): string {
+export function getDialogBlockPreloadPath(): string {
     if (cachedDialogPreloadPath) {
         return cachedDialogPreloadPath;
     }
@@ -61,6 +63,17 @@ export interface WindowPoolConfig {
     maxWindowAge: number; // milliseconds
     maxWindowUsage: number; // number of times a window can be reused
     cleanupInterval: number; // milliseconds
+}
+
+export interface WindowDisplay {
+    visible: boolean;
+    offscreen: boolean;
+}
+
+export const DEFAULT_WINDOW_DISPLAY: WindowDisplay = { visible: false, offscreen: true };
+
+export function isDefaultWindowDisplay(display?: WindowDisplay): boolean {
+    return !display || (!display.visible && display.offscreen);
 }
 
 // How many Chromium windows this app may have open for scraping at once.
@@ -268,8 +281,6 @@ export class WindowPool {
      * session.on('will-download') would accumulate a listener on every reuse.
      */
     private setupSlotSession(slotSession: Session, slot: number): void {
-        const platform = os.platform();
-
         // Prevent downloads from being saved to disk
         slotSession.on('will-download', (event) => {
             Logger.log(`[WindowPool] Download blocked in slot ${slot}`);
@@ -299,27 +310,156 @@ export class WindowPool {
             callback(0); // Accept all certificates to avoid dialogs
         });
 
-        // Set up stealth headers once for this slot's session
-        slotSession.webRequest.onBeforeSendHeaders((details, callback) => {
-            const headers = {
-                ...details.requestHeaders,
-                'Referer': 'https://www.google.com/',
-                'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="139", "Google Chrome";v="139"',
-                'sec-ch-ua-mobile': '?0',
-                'sec-ch-ua-platform': platform === 'win32' ? '"Windows"' : '"macOS"',
-                'sec-fetch-dest': 'document',
-                'sec-fetch-mode': 'navigate',
-                'sec-fetch-site': 'cross-site',
-                'sec-fetch-user': '?1',
-                'upgrade-insecure-requests': '1',
-                'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-                'accept-language': 'en-US,en;q=0.9',
-                'accept-encoding': 'gzip, deflate, br, zstd',
-                'cache-control': 'max-age=0'
-            };
+        attachClientHeaderHook(slotSession);
+    }
 
-            callback({ requestHeaders: headers });
+    private createPoolBrowserWindow(
+        uniqueSession: Session,
+        windowId: string,
+        display: WindowDisplay = DEFAULT_WINDOW_DISPLAY
+    ): BrowserWindow {
+        const win = new BrowserWindow({
+            show: display.visible,
+            width: 1709,
+            height: 984,
+            ...(display.visible ? {} : { x: -10000, y: -10000 }),
+            focusable: display.visible,
+            webPreferences: {
+                offscreen: display.offscreen,
+                nodeIntegration: false,
+                // Preload must patch the page's window; isolated preload cannot do that.
+                contextIsolation: false,
+                nodeIntegrationInSubFrames: true,
+                preload: getDialogBlockPreloadPath(),
+                disableDialogs: true,
+                session: uniqueSession,
+                webSecurity: true,
+                allowRunningInsecureContent: false,
+                experimentalFeatures: false,
+                enablePreferredSizeMode: false,
+                spellcheck: false,
+            }
         });
+
+        win.webContents.on('will-prevent-unload', (event) => {
+            Logger.log(`[WindowPool] Prevented beforeunload dialog in ${windowId}`);
+            event.preventDefault();
+        });
+
+        win.webContents.on('login', (event, _details, _authInfo, callback) => {
+            Logger.log(`[WindowPool] HTTP auth blocked in ${windowId}`);
+            event.preventDefault();
+            callback('', '');
+        });
+
+        (win.webContents as any).on('will-print', (event: any) => {
+            Logger.log(`[WindowPool] Print blocked in ${windowId}`);
+            event.preventDefault();
+        });
+
+        win.webContents.on('select-client-certificate', (event, _url, _list, callback) => {
+            Logger.log(`[WindowPool] Client cert selection blocked in ${windowId}`);
+            event.preventDefault();
+            callback(undefined as any);
+        });
+
+        win.webContents.on('select-bluetooth-device', (event, _devices, callback) => {
+            Logger.log(`[WindowPool] Bluetooth selection blocked in ${windowId}`);
+            event.preventDefault();
+            callback('');
+        });
+
+        (win.webContents as any).on('select-serial-port', (event: any, _ports: any, _webContents: any, callback: any) => {
+            Logger.log(`[WindowPool] Serial port selection blocked in ${windowId}`);
+            event.preventDefault();
+            callback('');
+        });
+
+        (win.webContents as any).on('select-hid-device', (event: any, _details: any, callback: any) => {
+            Logger.log(`[WindowPool] HID device selection blocked in ${windowId}`);
+            event.preventDefault();
+            callback(undefined);
+        });
+
+        (win.webContents as any).on('select-usb-device', (event: any, _details: any, callback: any) => {
+            Logger.log(`[WindowPool] USB device selection blocked in ${windowId}`);
+            event.preventDefault();
+            callback(undefined);
+        });
+
+        const BLOCKED_PROTOCOLS = [
+            'mailto:', 'tel:', 'sms:', 'callto:',
+            'ms-windows-store:', 'ms-settings:',
+            'slack:', 'spotify:', 'steam:', 'discord:',
+            'zoommtg:', 'msteams:', 'skype:',
+            'file:', 'ftp:', 'sftp:',
+        ];
+
+        win.webContents.on('will-navigate', (event, url) => {
+            const urlLower = url.toLowerCase();
+            for (const protocol of BLOCKED_PROTOCOLS) {
+                if (urlLower.startsWith(protocol)) {
+                    Logger.log(`[WindowPool] Blocked navigation to ${protocol} in ${windowId}`);
+                    event.preventDefault();
+                    return;
+                }
+            }
+        });
+
+        win.webContents.setWindowOpenHandler(({ url }) => {
+            const urlLower = url.toLowerCase();
+            for (const protocol of BLOCKED_PROTOCOLS) {
+                if (urlLower.startsWith(protocol)) {
+                    Logger.log(`[WindowPool] Blocked popup to ${protocol} in ${windowId}`);
+                    return { action: 'deny' };
+                }
+            }
+            Logger.log(`[WindowPool] Popup blocked in ${windowId}`);
+            return { action: 'deny' };
+        });
+
+        win.webContents.setAudioMuted(true);
+
+        if (!display.visible) {
+            win.on('show', () => {
+                Logger.log(`[WindowPool] Window ${windowId} attempted to show, hiding it`);
+                win.setPosition(-10000, -10000);
+                win.hide();
+            });
+
+            win.on('focus', () => {
+                Logger.log(`[WindowPool] Window ${windowId} attempted to focus, hiding it`);
+                win.blur();
+                win.hide();
+            });
+
+            const visibilityCheck = setInterval(() => {
+                if (win && !win.isDestroyed() && win.isVisible()) {
+                    Logger.log(`[WindowPool] Window ${windowId} became visible, hiding it immediately`);
+                    win.hide();
+                }
+            }, 100);
+
+            win.on('closed', () => {
+                clearInterval(visibilityCheck);
+            });
+        }
+
+        win.webContents.setUserAgent(getDeviceClient().userAgent || '');
+
+        win.webContents.on('render-process-gone', (_event, details) => {
+            Logger.error(`[WindowPool] Window ${windowId} render process gone: ${details.reason}`);
+            const current = this.pool.find(pw => pw.id === windowId);
+            if (current?.window === win) {
+                this.removeWindowFromPool(windowId);
+            }
+        });
+
+        win.on('unresponsive', () => {
+            Logger.error(`[WindowPool] Window ${windowId} became unresponsive`);
+        });
+
+        return win;
     }
 
     /**
@@ -339,7 +479,6 @@ export class WindowPool {
         // creations can never grab the same slot / session.
         const slot = this.acquireSlot();
         const windowId = `window-slot${slot}-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
-        const platform = os.platform();
 
         let createdWindow: BrowserWindow | undefined;
         try {
@@ -365,166 +504,8 @@ export class WindowPool {
 
             const uniqueSession = slotSession;
 
-        const win = new BrowserWindow({
-            show: false,
-            width: 1709,
-            height: 984,
-            x: -10000,                  // Position off-screen as failsafe
-            y: -10000,
-            focusable: false,           // Prevent focus stealing
-            webPreferences: {
-                offscreen: true,
-                nodeIntegration: false,
-                // Preload must patch the page's window; isolated preload cannot do that.
-                contextIsolation: false,
-                nodeIntegrationInSubFrames: true,
-                preload: getDialogBlockPreloadPath(),
-                disableDialogs: true,
-                session: uniqueSession,
-                webSecurity: true,
-                allowRunningInsecureContent: false,
-                experimentalFeatures: false,
-                enablePreferredSizeMode: false,
-                spellcheck: false,      // Disable spellcheck popups
-            }
-        });
+        const win = this.createPoolBrowserWindow(uniqueSession, windowId);
         createdWindow = win;
-
-        // CRITICAL: Prevent beforeunload dialogs
-        win.webContents.on('will-prevent-unload', (event) => {
-            Logger.log(`[WindowPool] Prevented beforeunload dialog in ${windowId}`);
-            event.preventDefault();
-        });
-
-        // CRITICAL: Block HTTP authentication dialogs
-        win.webContents.on('login', (event, _details, _authInfo, callback) => {
-            Logger.log(`[WindowPool] HTTP auth blocked in ${windowId}`);
-            event.preventDefault();
-            callback('', ''); // Provide empty credentials
-        });
-
-        // BLOCK: Print dialog
-        (win.webContents as any).on('will-print', (event: any) => {
-            Logger.log(`[WindowPool] Print blocked in ${windowId}`);
-            event.preventDefault();
-        });
-
-        // BLOCK: Client certificate selection dialog
-        win.webContents.on('select-client-certificate', (event, _url, _list, callback) => {
-            Logger.log(`[WindowPool] Client cert selection blocked in ${windowId}`);
-            event.preventDefault();
-            callback(undefined as any);
-        });
-
-        // BLOCK: Bluetooth device selection
-        win.webContents.on('select-bluetooth-device', (event, _devices, callback) => {
-            Logger.log(`[WindowPool] Bluetooth selection blocked in ${windowId}`);
-            event.preventDefault();
-            callback('');
-        });
-
-        // BLOCK: Serial port selection
-        (win.webContents as any).on('select-serial-port', (event: any, _ports: any, _webContents: any, callback: any) => {
-            Logger.log(`[WindowPool] Serial port selection blocked in ${windowId}`);
-            event.preventDefault();
-            callback('');
-        });
-
-        // BLOCK: HID device selection
-        (win.webContents as any).on('select-hid-device', (event: any, _details: any, callback: any) => {
-            Logger.log(`[WindowPool] HID device selection blocked in ${windowId}`);
-            event.preventDefault();
-            callback(undefined);
-        });
-
-        // BLOCK: USB device selection
-        (win.webContents as any).on('select-usb-device', (event: any, _details: any, callback: any) => {
-            Logger.log(`[WindowPool] USB device selection blocked in ${windowId}`);
-            event.preventDefault();
-            callback(undefined);
-        });
-
-        // BLOCK: External protocol navigations that could open system apps
-        const BLOCKED_PROTOCOLS = [
-            'mailto:', 'tel:', 'sms:', 'callto:',
-            'ms-windows-store:', 'ms-settings:',
-            'slack:', 'spotify:', 'steam:', 'discord:',
-            'zoommtg:', 'msteams:', 'skype:',
-            'file:', 'ftp:', 'sftp:',
-        ];
-
-        win.webContents.on('will-navigate', (event, url) => {
-            const urlLower = url.toLowerCase();
-            for (const protocol of BLOCKED_PROTOCOLS) {
-                if (urlLower.startsWith(protocol)) {
-                    Logger.log(`[WindowPool] Blocked navigation to ${protocol} in ${windowId}`);
-                    event.preventDefault();
-                    return;
-                }
-            }
-        });
-
-        // Also block external protocols in new-window attempts
-        win.webContents.setWindowOpenHandler(({ url }) => {
-            const urlLower = url.toLowerCase();
-            for (const protocol of BLOCKED_PROTOCOLS) {
-                if (urlLower.startsWith(protocol)) {
-                    Logger.log(`[WindowPool] Blocked popup to ${protocol} in ${windowId}`);
-                    return { action: 'deny' };
-                }
-            }
-            Logger.log(`[WindowPool] Popup blocked in ${windowId}`);
-            return { action: 'deny' }; // Block all popups anyway
-        });
-
-        // Dialog/UI blocking is handled by src/preload/dialog-block.ts (see webPreferences.preload).
-
-        // Ensure window is always muted and can never play sound
-        win.webContents.setAudioMuted(true);
-
-        // CRITICAL: Prevent window from ever becoming visible
-        win.on('show', () => {
-            Logger.log(`[WindowPool] Window ${windowId} attempted to show, hiding it`);
-            win.setPosition(-10000, -10000); // Move off-screen immediately
-            win.hide();
-        });
-
-        // Block focus attempts that could make window visible
-        win.on('focus', () => {
-            Logger.log(`[WindowPool] Window ${windowId} attempted to focus, hiding it`);
-            win.blur();
-            win.hide();
-        });
-
-        // Additional safeguard: Monitor and force hide if window becomes visible
-        const visibilityCheck = setInterval(() => {
-            if (win && !win.isDestroyed() && win.isVisible()) {
-                Logger.log(`[WindowPool] Window ${windowId} became visible, hiding it immediately`);
-                win.hide();
-            }
-        }, 100); // Check every 100ms
-
-        // Clean up interval when window is destroyed
-        win.on('closed', () => {
-            clearInterval(visibilityCheck);
-        });
-
-        // Set OS-specific user agent ONCE for this window
-        const userAgent = platform === 'win32'
-            ? 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36'
-            : 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36';
-
-        win.webContents.setUserAgent(userAgent);
-
-        // Add error handling
-        win.webContents.on('render-process-gone', (event, details) => {
-            Logger.error(`[WindowPool] Window ${windowId} render process gone: ${details.reason}`);
-            this.removeWindowFromPool(windowId);
-        });
-
-        win.on('unresponsive', () => {
-            Logger.error(`[WindowPool] Window ${windowId} became unresponsive`);
-        });
 
         const pooledWindow: PooledWindow = {
             window: win,
@@ -572,7 +553,11 @@ export class WindowPool {
         // Check if we've exceeded the 50-second timeout
         const elapsedTime = Date.now() - startTime;
         if (elapsedTime > 50000) {
-            const error = new Error('[WindowPool] Timeout: No window became available within 50 seconds');
+            const error = new ObservedError('[WindowPool] Timeout: No window became available within 50 seconds', {
+                code: 'WINDOW_ACQUIRE_TIMEOUT',
+                stage: 'window_pool',
+                raw: { timeout_ms: 50000, elapsed_ms: elapsedTime },
+            });
             Logger.error(error.message);
             throw error;
         }
@@ -702,11 +687,23 @@ export class WindowPool {
         Logger.log(`[WindowPool] Released window ${pooledWindow.id}`);
     }
 
+    private rebuildPooledWindow(pooledWindow: PooledWindow, display: WindowDisplay): void {
+        const next = this.createPoolBrowserWindow(pooledWindow.session, pooledWindow.id, display);
+        const previous = pooledWindow.window;
+        pooledWindow.window = next;
+        if (!previous.isDestroyed()) {
+            previous.destroy();
+        }
+        Logger.log(`[WindowPool] Rebuilt window ${pooledWindow.id} (visible=${display.visible}, offscreen=${display.offscreen})`);
+    }
+
     /**
      * Execute a task with a pooled window (with concurrency control)
      */
     public async executeWithWindow<T>(
-        task: (window: BrowserWindow) => Promise<T>
+        task: (window: BrowserWindow) => Promise<T>,
+        timeoutMs: number = DEFAULT_SCRAPE_TIMEOUT_MS,
+        display: WindowDisplay = DEFAULT_WINDOW_DISPLAY
     ): Promise<T> {
         if (this.shuttingDown) {
             throw new Error('[WindowPool] Cannot accept work while shut down');
@@ -720,11 +717,13 @@ export class WindowPool {
         return this.limit(async () => {
             const pooledWindow = await this.acquireWindow();
             const startTime = Date.now();
+            const watchdogMs = timeoutMs + 5000;
 
-            // Watchdog timer to detect stuck windows (>60 seconds)
+            // Watchdog fires shortly after the job timeout so a hung task
+            // cannot pin a window after Promise.race should have settled.
             const watchdogTimer = setInterval(() => {
                 const elapsedTime = Date.now() - startTime;
-                if (elapsedTime > 60000 && pooledWindow.inUse) {
+                if (elapsedTime > watchdogMs && pooledWindow.inUse) {
                     Logger.error(`[WindowPool] Window ${pooledWindow.id} stuck for ${Math.floor(elapsedTime / 1000)}s, destroying it`);
                     clearInterval(watchdogTimer);
                     
@@ -745,6 +744,15 @@ export class WindowPool {
             }, 5000); // Check every 5 seconds
 
             try {
+                // Rebuild inside the try/finally: if constructing the custom-display
+                // window throws, the acquired pooledWindow must still be destroyed and
+                // released (see catch/finally below) instead of leaking permanently as
+                // "in use" with no window ever executing a task.
+                if (!isDefaultWindowDisplay(display)) {
+                    this.rebuildPooledWindow(pooledWindow, display);
+                    pooledWindow.needsRotation = true;
+                }
+
                 // Double-check window is not destroyed before executing task
                 if (pooledWindow.window.isDestroyed()) {
                     throw new Error(`[WindowPool] Window ${pooledWindow.id} was destroyed before task execution`);
@@ -897,6 +905,17 @@ export class WindowPool {
                         Logger.error(`[WindowPool] Error loading blank page: ${err}`);
                     }
                 });
+            }
+
+            // Drop cookies/storage/cache so the next empty job cannot inherit this one.
+            if (!window.isDestroyed()) {
+                const slotSession = window.webContents.session;
+                try {
+                    await slotSession.clearStorageData();
+                    await slotSession.clearCache();
+                } catch (err) {
+                    Logger.error(`[WindowPool] Error clearing slot session: ${err}`);
+                }
             }
         } catch (error) {
             if (!window.isDestroyed()) {
