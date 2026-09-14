@@ -8,6 +8,7 @@ import { runActions } from './actions';
 import { getWindowPool, windowPoolConfigFor } from './window-pool';
 import { executeWithJarWindow, parseJobOrigin, resetJarAll, resetJarOrigin, restoreCookies, snapshotCookies } from './jar';
 import { applyJobClient, buildStealthScript, releaseJobClient } from './client';
+import { attachMeucci, injectMeucciNow, collectAndSendCaptures, parseBurkeObject, type MeucciHandle, type MeucciConfig } from './meucci-helpers';
 import sharp from 'sharp';
 
 export async function makeFetchRequest(dataRequest: DataRequest): Promise<{ contentType: string | null, content: Buffer }> {
@@ -129,6 +130,21 @@ async function runRequestActions(win: BrowserWindow, dataRequest: DataRequest): 
     dataRequest.actionResults = await runActions(win, dataRequest.actions, dataRequest.actionSettings());
 }
 
+async function finalizeMeucci(win: BrowserWindow, config: MeucciConfig, handle: MeucciHandle | null): Promise<void> {
+    try {
+        if (win.isDestroyed()) {
+            Logger.error(`[Meucci] window gone before collection for ${config.burke_id}, captures lost`);
+        } else {
+            const sent = await collectAndSendCaptures(win, config);
+            Logger.log(`[Meucci] ${sent} capture(s) sent for ${config.burke_id}`);
+        }
+    } catch (error) {
+        Logger.error(`[Meucci] collection failed for ${config.burke_id}: ${error}`);
+    } finally {
+        if (handle) await handle.detach();
+    }
+}
+
 export async function processHtmlContent(htmlString: string, dataRequest: DataRequest): Promise<{ html: string; markdown: string; screenshot: Buffer | undefined; contentType: string | undefined }> {
     const run = async (win: BrowserWindow) => {
         applyJobClient(win, dataRequest.client);
@@ -144,6 +160,9 @@ export async function processHtmlContent(htmlString: string, dataRequest: DataRe
             }, timeoutMs);
         });
 
+        const meucciConfig = parseBurkeObject(dataRequest.burkeObject, dataRequest.recordID);
+        let meucciHandle: MeucciHandle | null = null;
+
         // Race between the actual processing and the timeout
         try {
             return await Promise.race([
@@ -154,6 +173,12 @@ export async function processHtmlContent(htmlString: string, dataRequest: DataRe
                         dataRequest.windowSize.width || 1709,
                         dataRequest.windowSize.height || 984
                     );
+                }
+
+                // Must be installed before loadURL: the interception has to be
+                // in place before the document's own scripts run.
+                if (meucciConfig) {
+                    meucciHandle = await attachMeucci(win, meucciConfig);
                 }
 
                 try {
@@ -167,6 +192,14 @@ export async function processHtmlContent(htmlString: string, dataRequest: DataRe
                 });
                 win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(htmlString)}`);
             });
+
+            // CDP was unavailable, so the interceptor was never installed at
+            // document start. Injecting here still catches requests fired
+            // during the waitBeforeScraping window, which is strictly better
+            // than nothing, but load-time requests are already gone.
+            if (meucciHandle && meucciHandle.mode === 'fallback') {
+                await injectMeucciNow(win, meucciHandle);
+            }
 
             // Wait if specified
             if (dataRequest.waitBeforeScraping > 0) {
@@ -261,6 +294,9 @@ export async function processHtmlContent(htmlString: string, dataRequest: DataRe
             if (timeoutId) {
                 clearTimeout(timeoutId);
             }
+            if (meucciConfig) {
+                await finalizeMeucci(win, meucciConfig, meucciHandle);
+            }
             releaseJobClient(win);
         }
     };
@@ -325,6 +361,8 @@ async function processUrlWithWindow(win: BrowserWindow, dataRequest: DataRequest
         });
 
         const client = applyJobClient(win, dataRequest.client);
+        const meucciConfig = parseBurkeObject(dataRequest.burkeObject, dataRequest.recordID);
+        let meucciHandle: MeucciHandle | null = null;
 
         // Race between the actual processing and the timeout
         try {
@@ -338,6 +376,12 @@ async function processUrlWithWindow(win: BrowserWindow, dataRequest: DataRequest
                     );
                 }
 
+                // Must be installed before loadURL: the interception has to be
+                // in place before the document's own scripts run.
+                if (meucciConfig) {
+                    meucciHandle = await attachMeucci(win, meucciConfig);
+                }
+
                 try {
             const stealthScript = buildStealthScript(client);
 
@@ -345,6 +389,14 @@ async function processUrlWithWindow(win: BrowserWindow, dataRequest: DataRequest
             await new Promise<void>((resolve, reject) => {
                 const domReadyHandler = async () => {
                     try {
+                        // CDP was unavailable, so the interceptor was never
+                        // installed at document start. Injecting here still
+                        // catches requests fired during the waitBeforeScraping
+                        // window, which is strictly better than nothing, but
+                        // load-time requests are already gone.
+                        if (meucciHandle && meucciHandle.mode === 'fallback') {
+                            await injectMeucciNow(win, meucciHandle);
+                        }
                         // Inject stealth script after DOM is ready
                         await win.webContents.executeJavaScript(stealthScript);
                         resolve();
@@ -456,6 +508,9 @@ async function processUrlWithWindow(win: BrowserWindow, dataRequest: DataRequest
         } finally {
             if (timeoutId) {
                 clearTimeout(timeoutId);
+            }
+            if (meucciConfig) {
+                await finalizeMeucci(win, meucciConfig, meucciHandle);
             }
             releaseJobClient(win);
         }

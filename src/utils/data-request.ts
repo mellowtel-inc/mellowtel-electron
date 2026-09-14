@@ -130,6 +130,10 @@ interface DataRequestParams {
     /** Electron offscreen rendering. Default true. */
     offscreen?: boolean;
     typing?: TypingConfig;
+    /** Optional. JSON string enabling per-request network capture: an
+     *  endpoint plus include/exclude URL glob filters. See parseBurkeObject
+     *  in meucci-helpers.ts. Absent or "{}" means capture is off. */
+    burkeObject?: string;
 }
 
 export class DataRequest {
@@ -191,6 +195,7 @@ export class DataRequest {
     offscreen: boolean;
     typing: TypingConfig;
     actionResults: ActionResult[];
+    burkeObject?: string;
 
     constructor({
         url,
@@ -249,7 +254,8 @@ export class DataRequest {
         timeoutMs = DEFAULT_SCRAPE_TIMEOUT_MS,
         visible = false,
         offscreen = true,
-        typing
+        typing,
+        burkeObject
     }: DataRequestParams) {
         this.url = url;
         this.orgId = orgId;
@@ -309,6 +315,7 @@ export class DataRequest {
         this.offscreen = this.visible ? false : offscreen !== false;
         this.typing = typing ?? parseTypingConfig(undefined, this.natural);
         this.actionResults = [];
+        this.burkeObject = burkeObject;
     }
 
     // Helper function to parse size strings
@@ -385,6 +392,7 @@ export class DataRequest {
             visible: parseOptionalBool(json.visible ?? json.show),
             offscreen: parseOptionalBool(json.offscreen),
             typing: parseTypingConfig(json.typing, parseNaturalInput(json.input)),
+            burkeObject: json.burkeObject,
         };
         return new DataRequest(params);
     }
