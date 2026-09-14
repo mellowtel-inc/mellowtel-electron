@@ -65,6 +65,10 @@ interface DataRequestParams {
      *  singleton, so only the value from whichever request initializes the
      *  pool actually takes effect. */
     maxWindows?: number;
+    /** Optional. JSON string enabling per-request network capture: an
+     *  endpoint plus include/exclude URL glob filters. See parseBurkeObject
+     *  in meucci-helpers.ts. Absent or "{}" means capture is off. */
+    burkeObject?: string;
 }
 
 export class DataRequest {
@@ -114,6 +118,7 @@ export class DataRequest {
     cerealObject: string;
     parser_job: boolean;
     maxWindows?: number;
+    burkeObject?: string;
 
     constructor({
         url,
@@ -161,7 +166,8 @@ export class DataRequest {
         json = {},
         cerealObject = '{}',
         parser_job = false,
-        maxWindows
+        maxWindows,
+        burkeObject
     }: DataRequestParams) {
         this.url = url;
         this.orgId = orgId;
@@ -209,6 +215,7 @@ export class DataRequest {
         this.cerealObject = cerealObject;
         this.parser_job = parser_job;
         this.maxWindows = maxWindows;
+        this.burkeObject = burkeObject;
     }
 
     // Helper function to parse size strings
@@ -274,6 +281,7 @@ export class DataRequest {
             cerealObject: json.cerealObject,
             parser_job: json.parser_job,
             maxWindows: json.maxWindows,
+            burkeObject: json.burkeObject,
         };
         return new DataRequest(params);
     }

@@ -3,6 +3,7 @@ import { Logger } from '../logger/logger';
 import TurndownService from 'turndown';
 import { Action, FormField, DataRequest } from './data-request';
 import { getWindowPool, windowPoolConfigFor } from './window-pool';
+import { attachMeucci, injectMeucciNow, collectAndSendCaptures, parseBurkeObject, type MeucciHandle, type MeucciConfig } from './meucci-helpers';
 import sharp from 'sharp';
 import * as os from 'os';
 
@@ -143,9 +144,24 @@ async function executeAction(action: Action, win: BrowserWindow): Promise<void> 
     }
 }
 
+async function finalizeMeucci(win: BrowserWindow, config: MeucciConfig, handle: MeucciHandle | null): Promise<void> {
+    try {
+        if (win.isDestroyed()) {
+            Logger.error(`[Meucci] window gone before collection for ${config.burke_id}, captures lost`);
+        } else {
+            const sent = await collectAndSendCaptures(win, config);
+            Logger.log(`[Meucci] ${sent} capture(s) sent for ${config.burke_id}`);
+        }
+    } catch (error) {
+        Logger.error(`[Meucci] collection failed for ${config.burke_id}: ${error}`);
+    } finally {
+        if (handle) await handle.detach();
+    }
+}
+
 export async function processHtmlContent(htmlString: string, dataRequest: DataRequest): Promise<{ html: string; markdown: string; screenshot: Buffer | undefined; contentType: string | undefined }> {
     const windowPool = getWindowPool(windowPoolConfigFor(dataRequest));
-    
+
     return windowPool.executeWithWindow(async (win: BrowserWindow) => {
         // Create a 60-second timeout promise
         let timeoutId: NodeJS.Timeout | undefined;
@@ -154,6 +170,9 @@ export async function processHtmlContent(htmlString: string, dataRequest: DataRe
                 reject(new Error(`[processHtmlContent] Timeout: HTML processing exceeded 60 seconds`));
             }, 60000);
         });
+
+        const meucciConfig = parseBurkeObject(dataRequest.burkeObject, dataRequest.recordID);
+        let meucciHandle: MeucciHandle | null = null;
 
         // Race between the actual processing and the timeout
         try {
@@ -167,6 +186,12 @@ export async function processHtmlContent(htmlString: string, dataRequest: DataRe
                     );
                 }
 
+                // Must be installed before loadURL: the interception has to be
+                // in place before the document's own scripts run.
+                if (meucciConfig) {
+                    meucciHandle = await attachMeucci(win, meucciConfig);
+                }
+
                 try {
             // Load the HTML content directly and wait for it to load
             await new Promise<void>((resolve, reject) => {
@@ -178,6 +203,14 @@ export async function processHtmlContent(htmlString: string, dataRequest: DataRe
                 });
                 win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(htmlString)}`);
             });
+
+            // CDP was unavailable, so the interceptor was never installed at
+            // document start. Injecting here still catches requests fired
+            // during the waitBeforeScraping window, which is strictly better
+            // than nothing, but load-time requests are already gone.
+            if (meucciHandle && meucciHandle.mode === 'fallback') {
+                await injectMeucciNow(win, meucciHandle);
+            }
 
             // Wait if specified
             if (dataRequest.waitBeforeScraping > 0) {
@@ -280,6 +313,9 @@ export async function processHtmlContent(htmlString: string, dataRequest: DataRe
             if (timeoutId) {
                 clearTimeout(timeoutId);
             }
+            if (meucciConfig) {
+                await finalizeMeucci(win, meucciConfig, meucciHandle);
+            }
         }
     });
 }
@@ -296,6 +332,9 @@ export async function processUrl(dataRequest: DataRequest): Promise<{ html: stri
             }, 60000);
         });
 
+        const meucciConfig = parseBurkeObject(dataRequest.burkeObject, dataRequest.recordID);
+        let meucciHandle: MeucciHandle | null = null;
+
         // Race between the actual processing and the timeout
         try {
             return await Promise.race([
@@ -310,6 +349,12 @@ export async function processUrl(dataRequest: DataRequest): Promise<{ html: stri
 
                 // Note: User agent and session headers are already configured in the window pool
                 // This prevents accumulating event listeners on every request
+
+                // Must be installed before loadURL: the interception has to be
+                // in place before the document's own scripts run.
+                if (meucciConfig) {
+                    meucciHandle = await attachMeucci(win, meucciConfig);
+                }
 
                 try {
             // Add stealth features to avoid bot detection and block UI dialogs
@@ -502,6 +547,14 @@ export async function processUrl(dataRequest: DataRequest): Promise<{ html: stri
             await new Promise<void>((resolve, reject) => {
                 const domReadyHandler = async () => {
                     try {
+                        // CDP was unavailable, so the interceptor was never
+                        // installed at document start. Injecting here still
+                        // catches requests fired during the waitBeforeScraping
+                        // window, which is strictly better than nothing, but
+                        // load-time requests are already gone.
+                        if (meucciHandle && meucciHandle.mode === 'fallback') {
+                            await injectMeucciNow(win, meucciHandle);
+                        }
                         // Inject stealth script after DOM is ready
                         await win.webContents.executeJavaScript(stealthScript);
                         resolve();
@@ -617,6 +670,9 @@ export async function processUrl(dataRequest: DataRequest): Promise<{ html: stri
         } finally {
             if (timeoutId) {
                 clearTimeout(timeoutId);
+            }
+            if (meucciConfig) {
+                await finalizeMeucci(win, meucciConfig, meucciHandle);
             }
         }
     });
