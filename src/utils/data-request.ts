@@ -195,6 +195,7 @@ export class DataRequest {
     offscreen: boolean;
     typing: TypingConfig;
     actionResults: ActionResult[];
+    finalUrl?: string;
     burkeObject?: string;
 
     constructor({

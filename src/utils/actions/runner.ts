@@ -12,7 +12,7 @@ import {
   resolveTyping,
 } from "./types";
 import { callPage, isActionable, pointInBox, queryTargets, TargetBox } from "./page-bridge";
-import { clickAt, keyEvent, mouseButton, movePointer, PointerState, pressKey, typeText, wheelAt } from "./input";
+import { clickAt, isValidKey, keyEvent, mouseButton, movePointer, PointerState, pressKey, typeText, wheelAt } from "./input";
 
 const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -132,6 +132,9 @@ async function runOne(
 
   switch (type) {
     case "wait": {
+      if (!action.selector && !action.text && action.milliseconds == null) {
+        throw new ActionStepError("failed", "missing_wait_condition");
+      }
       if (action.selector || action.text) {
         const started = Date.now();
         const limit = timeoutMs(action, settings);
@@ -203,14 +206,21 @@ async function runOne(
     }
 
     case "type": {
+      const text = action.text == null ? "" : String(action.text);
+      if (!text) {
+        throw new ActionStepError("failed", "missing_text");
+      }
       const typing = resolveTyping(action, settings.typing, natural);
-      await typeText(win, String(action.text ?? ""), typing);
+      await typeText(win, text, typing);
       return;
     }
 
     case "press": {
       if (!action.key) {
         throw new ActionStepError("failed", "missing_key");
+      }
+      if (!isValidKey(action.key)) {
+        throw new ActionStepError("failed", "invalid_key");
       }
       await pressKey(win, action.key, action.modifiers);
       await waitForNavigation(win, 2000);
@@ -220,6 +230,9 @@ async function runOne(
     case "select": {
       if (!action.selector) {
         throw new ActionStepError("failed", "missing_selector");
+      }
+      if (action.value == null && action.label == null) {
+        throw new ActionStepError("failed", "missing_value");
       }
       await waitForTargets(win, { ...action, all: false }, settings);
       const result = await callPage<{ ok: boolean; error?: string; value?: string }>(win, "setSelect", {
@@ -238,11 +251,26 @@ async function runOne(
     case "check": {
       const [target] = await waitForTargets(win, { ...action, all: false }, settings);
       const desired = action.checked !== false;
-      if (Boolean(target.checked) === desired) {
-        return target.checked;
+      const stateArgs = { selector: action.selector, selectorType: action.selectorType, frame: action.frame };
+      const before = await callPage<{ ok: boolean; error?: string; checked?: boolean }>(win, "checkState", stateArgs);
+      if (!before.ok) {
+        const reason = before.error || "not_found";
+        throw new ActionStepError(reason === "not_found" && action.optional ? "skipped" : "failed", reason);
+      }
+      if (before.checked === desired) {
+        return desired;
       }
       await clickAt(win, pointer, pointInBox(target, "center"), { natural: natural });
-      return desired;
+      // Read the real state back: the click may not have toggled it (e.g. unchecking a radio).
+      const started = Date.now();
+      while (Date.now() - started < 500) {
+        const after = await callPage<{ ok: boolean; checked?: boolean }>(win, "checkState", stateArgs);
+        if (after.ok && after.checked === desired) {
+          return desired;
+        }
+        await delay(50);
+      }
+      throw new ActionStepError("failed", "state_not_applied");
     }
 
     case "scroll": {
@@ -435,6 +463,9 @@ async function runOne(
       if (!action.key) {
         throw new ActionStepError("failed", "missing_key");
       }
+      if (!isValidKey(action.key)) {
+        throw new ActionStepError("failed", "invalid_key");
+      }
       await keyEvent(win, type === "key_down" ? "keyDown" : "keyUp", action.key, action.modifiers);
       return;
     }
@@ -450,12 +481,34 @@ async function runOne(
       if (!fromPoint || !toPoint) {
         throw new ActionStepError("failed", "missing_target");
       }
+      // Snapshot selector targets so a drag that moved nothing isn't reported as ok.
+      // Coordinate-only drags have no element to compare.
+      const readState = async (selector: unknown): Promise<string | null> => {
+        if (typeof selector !== "string") return null;
+        const snap = await callPage<{ ok: boolean; state?: string }>(win, "elementState", {
+          selector,
+          selectorType: action.selectorType,
+          frame: action.frame,
+        });
+        return snap.ok ? snap.state ?? null : null;
+      };
+      const verifiable = typeof action.from === "string" || typeof toTarget === "string";
+      const fromBefore = await readState(action.from);
+      const toBefore = await readState(toTarget);
+
       await movePointer(win, pointer, fromPoint, natural);
       await mouseButton(win, pointer, "mouseDown", action.button || "left");
       await delay(natural ? 80 + Math.random() * 80 : 20);
-      await movePointer(win, pointer, toPoint, natural);
+      await movePointer(win, pointer, toPoint, natural, true);
       await delay(natural ? 40 + Math.random() * 40 : 10);
       await mouseButton(win, pointer, "mouseUp", action.button || "left");
+
+      if (verifiable) {
+        await delay(50);
+        if (fromBefore === (await readState(action.from)) && toBefore === (await readState(toTarget))) {
+          throw new ActionStepError("failed", "no_effect");
+        }
+      }
       return;
     }
 
