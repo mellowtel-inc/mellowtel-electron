@@ -36,6 +36,8 @@ export function mapKeyCode(key: string): { keyCode: string; shift?: boolean } {
   const aliases: Record<string, string> = {
     enter: "Enter",
     return: "Enter",
+    "\n": "Enter",
+    "\r": "Enter",
     tab: "Tab",
     escape: "Escape",
     esc: "Escape",
@@ -187,10 +189,18 @@ export async function keyEvent(
   } as any);
 }
 
+// Text carried by the char event (keypress). Enter needs "\r" or the browser
+// never submits the form / inserts a line break. Other named keys carry none.
+function charTextFor(key: string): string | null {
+  if (mapKeyCode(key).keyCode === "Enter") return "\r";
+  return key.length === 1 ? key : null;
+}
+
 export async function pressKey(win: BrowserWindow, key: string, modifiers: string[] = []): Promise<void> {
   await keyEvent(win, "keyDown", key, modifiers);
-  if (key.length === 1) {
-    await keyEvent(win, "char", key, modifiers);
+  const text = charTextFor(key);
+  if (text !== null) {
+    await keyEvent(win, "char", text, modifiers);
   }
   await keyEvent(win, "keyUp", key, modifiers);
 }
@@ -200,6 +210,7 @@ const PUNCTUATION = new Set([".", ",", "!", "?", ";", ":", "/"]);
 export async function typeText(win: BrowserWindow, text: string, typing: TypingConfig): Promise<void> {
   const instant = typing.speed === "instant";
   let burstLeft = 0;
+  text = text.replace(/\r\n?/g, "\n"); // CRLF must be one Enter, not two
 
   for (let i = 0; i < text.length; i++) {
     const ch = text[i];
