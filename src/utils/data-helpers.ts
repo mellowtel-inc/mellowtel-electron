@@ -466,7 +466,9 @@ async function processUrlWithWindow(win: BrowserWindow, dataRequest: DataRequest
 
             // Get the processed HTML content
             const content = await win.webContents.executeJavaScript('document.documentElement.outerHTML');
-            Logger.log(`[processUrl]: Processed content from ${dataRequest.url}`);
+            // The page may have navigated (redirect, click, form submit) since loadURL.
+            dataRequest.finalUrl = win.webContents.getURL();
+            Logger.log(`[processUrl]: Processed content from ${dataRequest.finalUrl}`);
 
             // Handle screenshots if requested
             let screenshot: Buffer | undefined;

@@ -99,7 +99,7 @@ export async function saveCrawl(
     node_identifier: node_identifier,
     BATCH_execution: BATCH_execution,
     batch_id: batch_id,
-    final_url: datarequest.url, //TODO: UPDATE TO ACTUAL FINAL URL
+    final_url: datarequest.finalUrl || datarequest.url,
     website_unreachable: website_unreachable,
     statusCode: moreInfo.statusCode,
     requestMessageInfo: datarequest.json,
