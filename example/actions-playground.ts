@@ -8,6 +8,7 @@ interface Scenario {
   input?: "instant" | "natural";
   actions: Action[];
   expectStatuses?: Array<"ok" | "skipped" | "timeout" | "failed">;
+  expectReasons?: Array<string | undefined>;
   expectPage?: string;
 }
 
@@ -210,6 +211,56 @@ const scenarios: Scenario[] = [
     expectStatuses: ["skipped", "ok"],
     expectPage: `document.getElementById('results').textContent.includes('Results for:')`,
   },
+  {
+    id: "invalid-key",
+    name: "invalid: unknown key",
+    actions: [
+      { type: "press", key: "NotARealKey" },
+      { type: "key_down", key: "NotARealKey" },
+    ],
+    expectStatuses: ["failed", "failed"],
+    expectReasons: ["invalid_key", "invalid_key"],
+  },
+  {
+    id: "type-missing",
+    name: "invalid: type without text",
+    actions: [{ type: "type" }],
+    expectStatuses: ["failed"],
+    expectReasons: ["missing_text"],
+  },
+  {
+    id: "wait-empty",
+    name: "invalid: wait without fields",
+    actions: [{ type: "wait" }],
+    expectStatuses: ["failed"],
+    expectReasons: ["missing_wait_condition"],
+  },
+  {
+    id: "select-missing",
+    name: "invalid: select unknown option keeps selection",
+    actions: [
+      { type: "select", selector: "#country", value: "de" },
+      { type: "select", selector: "#country", value: "99" },
+      { type: "select", selector: "#country" },
+    ],
+    expectStatuses: ["ok", "failed", "failed"],
+    expectReasons: [undefined, "option_not_found", "missing_value"],
+    expectPage: `document.getElementById('country').value === 'de'`,
+  },
+  {
+    id: "check-not-checkbox",
+    name: "invalid: check on a text input",
+    actions: [{ type: "check", selector: "#q" }],
+    expectStatuses: ["failed"],
+    expectReasons: ["not_checkable"],
+  },
+  {
+    id: "drag-no-effect",
+    name: "invalid: drag that moves nothing",
+    actions: [{ type: "drag", from: "#title", to: "#track" }],
+    expectStatuses: ["failed"],
+    expectReasons: ["no_effect"],
+  },
 ];
 
 function settingsFor(scenario: Scenario): ActionJobSettings {
@@ -265,6 +316,13 @@ async function judge(
     const actual = results.map((r) => r.status);
     if (actual.join(",") !== scenario.expectStatuses.join(",")) {
       notes.push(`statuses ${actual.join(",")} != ${scenario.expectStatuses.join(",")}`);
+    }
+    if (scenario.expectReasons) {
+      const reasons = results.map((r) => r.reason ?? "-").join(",");
+      const wanted = scenario.expectReasons.map((r) => r ?? "-").join(",");
+      if (reasons !== wanted) {
+        notes.push(`reasons ${reasons} != ${wanted}`);
+      }
     }
   } else {
     results.forEach((result, i) => {

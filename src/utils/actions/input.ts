@@ -36,6 +36,8 @@ export function mapKeyCode(key: string): { keyCode: string; shift?: boolean } {
   const aliases: Record<string, string> = {
     enter: "Enter",
     return: "Enter",
+    "\n": "Enter",
+    "\r": "Enter",
     tab: "Tab",
     escape: "Escape",
     esc: "Escape",
@@ -63,17 +65,39 @@ export function mapKeyCode(key: string): { keyCode: string; shift?: boolean } {
   return { keyCode: key };
 }
 
+// Named keys accepted by sendInputEvent (lowercase). Anything else is not a key.
+const NAMED_KEYS = new Set([
+  "enter", "return", "tab", "escape", "esc", "backspace", "delete", "insert", "space",
+  "up", "down", "left", "right", "arrowup", "arrowdown", "arrowleft", "arrowright",
+  "home", "end", "pageup", "pagedown",
+  "shift", "control", "ctrl", "alt", "option", "altgr", "meta", "command", "cmd", "super",
+  "capslock", "numlock", "scrolllock", "printscreen", "plus",
+  "volumeup", "volumedown", "volumemute",
+  "medianexttrack", "mediaprevioustrack", "mediastop", "mediaplaypause",
+  "numdec", "numadd", "numsub", "nummult", "numdiv",
+  ...Array.from({ length: 10 }, (_, i) => `num${i}`),
+  ...Array.from({ length: 24 }, (_, i) => `f${i + 1}`),
+]);
+
+export function isValidKey(key: string): boolean {
+  if (typeof key !== "string" || key.length === 0) return false;
+  return key.length === 1 || NAMED_KEYS.has(key.toLowerCase());
+}
+
 export async function movePointer(
   win: BrowserWindow,
   pointer: PointerState,
   to: { x: number; y: number },
-  natural: boolean
+  natural: boolean,
+  buttonDown = false
 ): Promise<void> {
   const targetX = Math.max(0, Math.round(to.x));
   const targetY = Math.max(0, Math.round(to.y));
+  // Without a held button the page sees a hover, not a drag.
+  const held = buttonDown ? { button: "left" as const, modifiers: ["leftButtonDown" as const] } : {};
 
   if (!natural) {
-    win.webContents.sendInputEvent({ type: "mouseMove", x: targetX, y: targetY });
+    win.webContents.sendInputEvent({ type: "mouseMove", x: targetX, y: targetY, ...held });
     pointer.x = targetX;
     pointer.y = targetY;
     return;
@@ -94,7 +118,7 @@ export async function movePointer(
     const t = i / steps;
     const x = Math.round(bezier(pointer.x, c1.x, c2.x, targetX, t) + (Math.random() - 0.5) * 2);
     const y = Math.round(bezier(pointer.y, c1.y, c2.y, targetY, t) + (Math.random() - 0.5) * 2);
-    win.webContents.sendInputEvent({ type: "mouseMove", x: Math.max(0, x), y: Math.max(0, y) });
+    win.webContents.sendInputEvent({ type: "mouseMove", x: Math.max(0, x), y: Math.max(0, y), ...held });
     await delay(8 + Math.random() * 16);
   }
 
@@ -187,10 +211,18 @@ export async function keyEvent(
   } as any);
 }
 
+// Text carried by the char event (keypress). Enter needs "\r" or the browser
+// never submits the form / inserts a line break. Other named keys carry none.
+function charTextFor(key: string): string | null {
+  if (mapKeyCode(key).keyCode === "Enter") return "\r";
+  return key.length === 1 ? key : null;
+}
+
 export async function pressKey(win: BrowserWindow, key: string, modifiers: string[] = []): Promise<void> {
   await keyEvent(win, "keyDown", key, modifiers);
-  if (key.length === 1) {
-    await keyEvent(win, "char", key, modifiers);
+  const text = charTextFor(key);
+  if (text !== null) {
+    await keyEvent(win, "char", text, modifiers);
   }
   await keyEvent(win, "keyUp", key, modifiers);
 }
@@ -200,6 +232,7 @@ const PUNCTUATION = new Set([".", ",", "!", "?", ";", ":", "/"]);
 export async function typeText(win: BrowserWindow, text: string, typing: TypingConfig): Promise<void> {
   const instant = typing.speed === "instant";
   let burstLeft = 0;
+  text = text.replace(/\r\n?/g, "\n"); // CRLF must be one Enter, not two
 
   for (let i = 0; i < text.length; i++) {
     const ch = text[i];

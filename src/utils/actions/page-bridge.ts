@@ -173,16 +173,20 @@ const PAGE_BRIDGE = `function (method, args) {
     return withEl(a, function (els) {
       var el = els[0];
       if (el.tagName.toLowerCase() !== 'select') return { ok: false, error: 'not_select' };
+      var opts = Array.prototype.slice.call(el.options);
+      var match;
       if (a.value != null) {
-        el.value = String(a.value);
+        match = opts.find(function (o) { return o.value === String(a.value); });
       } else if (a.label != null) {
-        var opts = Array.prototype.slice.call(el.options);
-        var match = opts.find(function (o) { return o.text.trim() === String(a.label).trim(); });
-        if (!match) return { ok: false, error: 'option_not_found' };
-        el.value = match.value;
+        match = opts.find(function (o) { return o.text.trim() === String(a.label).trim(); });
+      } else {
+        return { ok: false, error: 'missing_value' };
       }
-      el.dispatchEvent(new Event('input', { bubbles: true }));
-      el.dispatchEvent(new Event('change', { bubbles: true }));
+      // Look the option up first: assigning an unknown value clears the selection.
+      if (!match) return { ok: false, error: 'option_not_found' };
+      el.selectedIndex = match.index;
+      dispatchInput(el);
+      if (el.selectedOptions[0] !== match) return { ok: false, error: 'state_not_applied', value: el.value };
       return { ok: true, value: el.value };
     });
   }
@@ -242,6 +246,44 @@ const PAGE_BRIDGE = `function (method, args) {
     extractJson: extractJson,
     clearValue: clearValue,
     setSelect: setSelect,
+    checkState: function (a) {
+      return withEl(a, function (els) {
+        var el = els[0];
+        if ((el.tagName || '').toLowerCase() === 'label' && el.control) el = el.control;
+        var type = String(el.type || '').toLowerCase();
+        var native = (el.tagName || '').toLowerCase() === 'input' && (type === 'checkbox' || type === 'radio');
+        var role = (el.getAttribute('role') || '').toLowerCase();
+        if (!native && !el.hasAttribute('aria-checked') && role !== 'checkbox' && role !== 'radio' && role !== 'switch') {
+          return { ok: false, error: 'not_checkable' };
+        }
+        return { ok: true, checked: native ? el.checked : el.getAttribute('aria-checked') === 'true' };
+      });
+    },
+    elementState: function (a) {
+      return withEl(a, function (els) {
+        var el = els[0];
+        var view = el.ownerDocument.defaultView;
+        var r = el.getBoundingClientRect();
+        var path = [];
+        for (var node = el; node && node.parentElement; node = node.parentElement) {
+          path.push(node.tagName + ':' + Array.prototype.indexOf.call(node.parentElement.children, node));
+        }
+        // Document coordinates, so scrolling alone doesn't count as movement.
+        return {
+          ok: true,
+          state: JSON.stringify({
+            value: 'value' in el ? String(el.value) : null,
+            x: Math.round(r.left + view.scrollX),
+            y: Math.round(r.top + view.scrollY),
+            w: Math.round(r.width),
+            h: Math.round(r.height),
+            children: el.childElementCount,
+            text: (el.textContent || '').length,
+            path: path.join('/')
+          })
+        };
+      });
+    },
     scrollMetrics: scrollMetrics,
     scrollInstant: scrollInstant,
     reveal: function (a) {
