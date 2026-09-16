@@ -7,6 +7,10 @@ import { Logger } from '../logger/logger';
  * `burkeObject`. Opt-in per job: absent `burkeObject` means capture is off
  * entirely.
  *
+ * SSE (`text/event-stream`) is copied from the page's own body reader. A
+ * second tee/clone consumer would share Chromium's BodyStreamBuffer, so a
+ * normal chat-client abort would ship an empty capture.
+ *
  * WebSocket capture is deliberately generic: it records raw frames (text
  * frames as-is, binary frames as a size marker) exactly as they cross the
  * wire, with no protocol-specific decoding. Sites that speak a custom binary
@@ -483,22 +487,19 @@ export function getMeucciScript(config: MeucciConfig): string {
           }
 
           if (contentType.indexOf('text/event-stream') !== -1) {
-            // A stream cannot be cloned usefully: tee it and hand the page a
-            // reconstructed Response over the second branch.
-            var branches;
+            // Do not tee(). Chat clients (Perplexity, ChatGPT) AbortController
+            // the fetch when they have enough tokens; that cancels the shared
+            // BodyStreamBuffer and the capture branch then ships empty.
+            // Return the original Response and copy chunks from the page's
+            // own reader so abort still leaves us whatever the page already saw.
+            info.type = 'event-stream';
             try {
-              branches = response.body.tee();
+              attachSseTap(response, info, ship, contentType, started);
             } catch (e) {
-              info.cloneError = String(e);
+              info.bodyReadError = String(e);
               ship();
-              return response;
             }
-            readStream(branches[0], info, ship, contentType);
-            return new Response(branches[1], {
-              status: response.status,
-              statusText: response.statusText,
-              headers: response.headers
-            });
+            return response;
           }
 
           // clone() must happen before anything consumes the body. The page
@@ -565,14 +566,101 @@ export function getMeucciScript(config: MeucciConfig): string {
     }
   }
 
+  // SSE capture without a second consumer. Patches this body's getReader so
+  // every chunk the page reads is copied into info; abort/cancel still ships
+  // the buffer instead of nulling it. Does not cancel the page's reader.
+  function attachSseTap(response, info, done, contentType, started) {
+    var limit = CONFIG.max_capture_bytes;
+    var decoder = new TextDecoder();
+    var buffer = '';
+    var bytes = 0;
+    var shipped = false;
+    var tapped = false;
+    var stream = response && response.body;
+
+    function finish(reason, err) {
+      if (shipped) return;
+      shipped = true;
+      info.responseData = buffer;
+      info.responseSize = buffer.length;
+      info.responseBytes = bytes;
+      info.contentType = contentType;
+      info.duration = Date.now() - started;
+      info.streamEnd = reason;
+      if (bytes > limit) info.truncated = true;
+      if (err) info.bodyReadError = String(err);
+      done();
+    }
+
+    if (!stream || typeof stream.getReader !== 'function') {
+      info.bodyReadError = 'no readable body';
+      finish('error');
+      return;
+    }
+
+    var originalGetReader = stream.getReader.bind(stream);
+    stream.getReader = function (options) {
+      var reader = originalGetReader(options);
+      if (tapped) return reader;
+      tapped = true;
+
+      var originalRead = reader.read.bind(reader);
+      var originalCancel = reader.cancel && reader.cancel.bind(reader);
+
+      reader.read = function () {
+        return originalRead().then(function (chunk) {
+          if (!shipped) {
+            if (chunk.done) {
+              buffer += decoder.decode();
+              finish('done');
+            } else if (chunk.value) {
+              bytes += chunk.value.byteLength;
+              if (!info.truncated) {
+                buffer += decoder.decode(chunk.value, { stream: true });
+                if (bytes > limit) {
+                  var capped = capByBytes(buffer);
+                  buffer = capped.text;
+                  finish('cap');
+                }
+              }
+            }
+          }
+          return chunk;
+        }, function (err) {
+          finish('abort', err);
+          throw err;
+        });
+      };
+
+      if (originalCancel) {
+        reader.cancel = function (reason) {
+          finish('cancel');
+          return originalCancel(reason);
+        };
+      }
+
+      return reader;
+    };
+
+    try {
+      Object.defineProperty(response, 'body', {
+        configurable: true,
+        get: function () { return stream; }
+      });
+    } catch (e) {}
+  }
+
   // Reads a body progressively under a byte cap, so a large or endless stream
   // can neither pin memory nor block the capture forever.
   function readStream(stream, info, done, contentType, fallbackResponse) {
     var limit = CONFIG.max_capture_bytes;
+    var shipped = false;
 
     // responseSize is the character length of what was stored; responseBytes is
     // the UTF-8 size the cap actually governs. They differ on non-Latin bodies.
     function finish(text, truncated, bytes) {
+      if (shipped) return;
+      shipped = true;
       info.responseData = text;
       info.responseSize = text.length;
       if (bytes !== null && bytes !== undefined) info.responseBytes = bytes;
@@ -626,7 +714,7 @@ export function getMeucciScript(config: MeucciConfig): string {
 
     pump()['catch'](function (e) {
       info.bodyReadError = String(e);
-      done();
+      finish(buffer, bytes > limit, bytes);
     });
   }
 
