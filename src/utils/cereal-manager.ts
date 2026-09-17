@@ -56,6 +56,9 @@ export class CerealManager {
     private hostWindows: HostWindowInfo[] = [];
     private initialized: boolean = false;
     private cleanupInterval: NodeJS.Timeout | null = null;
+    // Lock so concurrent callers share one in-flight initialize(), instead of each
+    // racing caller creating its own full set of host windows.
+    private initializingPromise: Promise<void> | null = null;
     private shuttingDown: boolean = false;
 
     private constructor() {}
@@ -75,7 +78,15 @@ export class CerealManager {
     }
 
     /**
-     * Initialize persistent host windows with cereal app loaded
+     * Initialize persistent host windows with cereal app loaded.
+     *
+     * Concurrent callers (e.g. two jobs racing on a cold manager, since
+     * processCerealJob() checks `!this.initialized` and then calls this) must
+     * share one in-flight promise. `this.initialized` is only set at the end of
+     * doInitialize(), so without this lock every racing caller ran the creation
+     * loop independently and pushed its own NUM_HOST_WINDOWS windows onto the
+     * shared hostWindows array - leaving a permanent multiple of the intended
+     * host-window count (and that many extra Electron processes) alive.
      */
     public async initialize(): Promise<void> {
         if (this.shuttingDown) {
@@ -87,6 +98,17 @@ export class CerealManager {
             return;
         }
 
+        if (this.initializingPromise) {
+            return this.initializingPromise;
+        }
+
+        this.initializingPromise = this.doInitialize().finally(() => {
+            this.initializingPromise = null;
+        });
+        return this.initializingPromise;
+    }
+
+    private async doInitialize(): Promise<void> {
         Logger.log(`[CerealManager] Initializing ${NUM_HOST_WINDOWS} host windows...`);
         Logger.log(`[CerealManager] Cereal app URL: ${CEREAL_APP_URL}`);
 
