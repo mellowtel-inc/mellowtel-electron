@@ -27,6 +27,8 @@ const ROTATION_WAIT_MS = 10_000;
 const WINDOW_LOAD_TIMEOUT_MS = 30_000;
 const JOB_TIMEOUT_MS = 30_000;
 const DRAIN_TIMEOUT_MS = JOB_TIMEOUT_MS + 5_000;
+/** After force-destroying a hung serving window, wait for finally to decrement. */
+const DRAIN_SETTLE_MS = 2_000;
 
 /** @deprecated Serving slots. Kept as NUM_HOST_WINDOWS for existing imports. */
 const NUM_HOST_WINDOWS = SERVING_SLOTS;
@@ -322,7 +324,9 @@ export class CerealManager {
 
     /**
      * Keep serving on the old window while the replacement loads. Drain in-flight
-     * jobs, swap, then destroy the old window. Never resets activeJobs.
+     * jobs, swap, then destroy the old window. Never resets activeJobs: only swap
+     * once the count is 0, or after force-destroying a hung window so finally can
+     * run. A drain timeout means give up on a graceful drain, not swap anyway.
      */
     private async rotateWindow(hostInfo: HostWindowInfo): Promise<void> {
         if (this.shuttingDown) {
@@ -345,16 +349,33 @@ export class CerealManager {
             if (!servingGone && !oldWin.isDestroyed()) {
                 hostInfo.draining = true;
                 Logger.log('[CerealManager] Replacement loaded, draining in-flight jobs before swap...');
-                const drainDeadline = Date.now() + DRAIN_TIMEOUT_MS;
-                while (hostInfo.activeJobs > 0 && Date.now() < drainDeadline && !this.shuttingDown) {
-                    await this.delay(50);
+                await this.waitForActiveJobs(hostInfo, DRAIN_TIMEOUT_MS);
+
+                if (this.shuttingDown) {
+                    this.destroyOwned(newWin, 'rotation-shutdown');
+                    hostInfo.draining = false;
+                    return;
                 }
+
+                if (hostInfo.activeJobs > 0 && !oldWin.isDestroyed()) {
+                    Logger.error(`[CerealManager] Drain timed out with ${hostInfo.activeJobs} in-flight job(s); destroying old window to unstick`);
+                    this.destroyOwned(oldWin, 'rotation-drain-hung');
+                    await this.waitForActiveJobs(hostInfo, DRAIN_SETTLE_MS);
+                }
+            } else if (hostInfo.activeJobs > 0) {
+                hostInfo.draining = true;
+                Logger.log(`[CerealManager] Serving window gone with ${hostInfo.activeJobs} dying job(s), waiting for them to settle...`);
+                await this.waitForActiveJobs(hostInfo, DRAIN_SETTLE_MS);
             }
 
             if (this.shuttingDown) {
                 this.destroyOwned(newWin, 'rotation-shutdown');
                 hostInfo.draining = false;
                 return;
+            }
+
+            if (hostInfo.activeJobs > 0) {
+                Logger.error(`[CerealManager] Swapping with ${hostInfo.activeJobs} unsettled job(s); counter will drop when their finally runs`);
             }
 
             hostInfo.window = newWin;
@@ -378,6 +399,13 @@ export class CerealManager {
         } finally {
             this.warmingWindow = null;
             this.trimToCap('post-rotation');
+        }
+    }
+
+    private async waitForActiveJobs(hostInfo: HostWindowInfo, timeoutMs: number): Promise<void> {
+        const deadline = Date.now() + timeoutMs;
+        while (hostInfo.activeJobs > 0 && Date.now() < deadline && !this.shuttingDown) {
+            await this.delay(50);
         }
     }
 
