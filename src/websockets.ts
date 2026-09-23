@@ -10,6 +10,7 @@ import { getS3SignedUrls, uploadToS3, saveCrawl } from './utils/put-to-signed';
 import { DataRequest } from './utils/data-request';
 import { incrementRequestCount } from './storage/request-counter';
 import { checkWebsocketApproval, getApprovalRecheckDelayMs, getElectronPluginId } from './utils/websocket-approval';
+import { cancelSpeedTest, getCachedSpeed, refreshSpeedInBackground } from './utils/measure-connection-speed';
 import {
     ObservedError,
     classifyRequestType,
@@ -114,9 +115,16 @@ export class WebSocketManager {
         try {
             this.isConnecting = true;
 
-            const speedMbps = 500 as number;
-            //  await MeasureConnectionSpeed();
-            // Logger.log(`[WebSocketManager]: Connection speed: ${speedMbps} Mbps`);
+            // Best-effort: read the cached reading synchronously and refresh in
+            // the background. Never awaited, so a slow or failing speed test
+            // cannot delay or break the connection.
+            let speedMbps = 0;
+            try {
+                speedMbps = getCachedSpeed();
+                refreshSpeedInBackground();
+            } catch (error) {
+                Logger.log(`[WebSocketManager]: Speed test skipped - ${error}`);
+            }
 
             const rawPlatform = os.platform();
             const platform = rawPlatform == 'darwin' ? 'macos' : rawPlatform == 'win32' ? 'windows' : 'linux';
@@ -156,9 +164,7 @@ export class WebSocketManager {
                 manifest_version: 'electron',
                 ws_client: 'new_ws',
             });
-            if (speedMbps != -1) {
-                queryParams.set('speed_download', speedMbps.toString());
-            }
+            queryParams.set('speed_download', speedMbps.toString());
 
             this.ws = new WebSocket(`${this.wsUrl}?${queryParams.toString()}`);
 
@@ -551,6 +557,7 @@ export class WebSocketManager {
         this.reconnectAttempts = -1;
         this.abortApprovalRequest();
         this.clearDeniedApprovalRetry();
+        cancelSpeedTest();
         if (this.reconnectTimeout) {
             clearTimeout(this.reconnectTimeout);
             this.reconnectTimeout = null;
