@@ -710,8 +710,9 @@ export class WebSocketManager {
     }
 
     /**
-     * Posts a summary of the SDK's own resource usage (windows, jobs,
-     * memory) to the event's callback endpoint. Read-only.
+     * Posts a summary of the resources used by the app and by the SDK
+     * (windows, jobs, memory, CPU) to the event's callback endpoint.
+     * Read-only.
      */
     private async handleHealthCheckEvent(payload: { [key: string]: unknown }): Promise<void> {
         const event = parseMaintenanceEvent(payload);
@@ -722,7 +723,7 @@ export class WebSocketManager {
 
         let report: unknown;
         try {
-            report = buildHealthReport({
+            report = await buildHealthReport({
                 requestId: event.requestId,
                 nodeIdentifier: this.identifier,
                 connectionState: this.getConnectionState(),
