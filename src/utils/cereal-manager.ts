@@ -784,6 +784,11 @@ export class CerealManager {
         };
     }
 
+    /** Live cereal windows currently owned by the manager. */
+    public getOwnedWindows(): BrowserWindow[] {
+        return [...this.ownedWindows].filter(win => !win.isDestroyed());
+    }
+
     public hasCapacity(): boolean {
         if (!this.initialized) {
             return true;

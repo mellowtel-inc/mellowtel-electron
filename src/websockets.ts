@@ -10,6 +10,8 @@ import { getS3SignedUrls, uploadToS3, saveCrawl } from './utils/put-to-signed';
 import { DataRequest } from './utils/data-request';
 import { incrementRequestCount } from './storage/request-counter';
 import { checkWebsocketApproval, getApprovalRecheckDelayMs, getElectronPluginId } from './utils/websocket-approval';
+import { parseMaintenanceEvent, postToCallback } from './utils/maintenance/callback';
+import { buildHealthReport, ConnectionState } from './utils/maintenance/health-check';
 import {
     ObservedError,
     classifyRequestType,
@@ -41,6 +43,16 @@ export class WebSocketManager {
     private readonly pingIntervalTime: number = 60000; // 60 seconds
     private readonly pongTimeoutTime: number = 5000; // receive pong back in < 5 seconds
     private readonly healthCheckIntervalTime: number = 15 * 60 * 1000; // 15 minutes
+    // Incremented on every reset. Jobs started before a reset see a different
+    // value and are dropped without posting results or error reports.
+    private jobGeneration: number = 0;
+    private jobsInProgress: number = 0;
+    private startedAt: number = 0;
+    private resetInProgress: boolean = false;
+    private lastResetAt: number = 0;
+    private openWaiters: Array<() => void> = [];
+    private readonly resetCooldownMs: number = 60 * 1000;
+    private readonly resetReconnectTimeoutMs: number = 30 * 1000;
 
     private constructor() {
         this.identifier = '';
@@ -58,6 +70,9 @@ export class WebSocketManager {
     public async initialize(identifier: string): Promise<boolean> {
         this.identifier = identifier;
         this.isVoluntarilyDisconnected = false;
+        if (!this.startedAt) {
+            this.startedAt = Date.now();
+        }
         getWindowPool().resume();
         getCerealManager().resume();
         resumeJarWindow();
@@ -184,6 +199,7 @@ export class WebSocketManager {
             this.isVoluntarilyDisconnected = false;
             this.startPing();
             this.startHealthCheck();
+            this.notifyOpenWaiters();
         };
 
         this.ws.onclose = () => {
@@ -253,6 +269,11 @@ export class WebSocketManager {
             return;
         }
 
+        if (this.resetInProgress) {
+            Logger.log("[WebSocketManager]: Health check skipped - reset in progress");
+            return;
+        }
+
         // Check if WebSocket is connected and open
         const isConnected = this.ws !== null && this.ws.readyState === WebSocket.OPEN;
         
@@ -289,6 +310,16 @@ export class WebSocketManager {
 
             if (json.type_event === 'jar') {
                 await handleJarEvent(json);
+                return;
+            }
+
+            if (json.type_event === 'reset') {
+                await this.handleResetEvent(json);
+                return;
+            }
+
+            if (json.type_event === 'health_check') {
+                await this.handleHealthCheckEvent(json);
                 return;
             }
 
@@ -338,12 +369,17 @@ export class WebSocketManager {
     }
 
     private async handleBatchRequest(requests: any[], batch_id: string, parallelExecutions: number, delay: number): Promise<void> {
+        const generation = this.jobGeneration;
         for (let i = 0; i < requests.length; i += parallelExecutions) {
+            if (this.isStaleJob(generation)) {
+                Logger.log(`[WebSocketManager]: Batch ${batch_id} dropped after reset`);
+                return;
+            }
             const chunk = requests.slice(i, i + parallelExecutions);
             const promises = chunk.map(requestData => {
                 const dataRequest = DataRequest.fromJson(requestData);
                 // Catch errors (including timeouts) to prevent one failure from stopping the batch
-                return this.processDataRequest(dataRequest, true, batch_id).catch(error => {
+                return this.processDataRequest(dataRequest, true, batch_id, generation).catch(error => {
                     Logger.error(`[WebSocketManager]: Batch request failed for ${dataRequest.url} - ${error.message}`);
                     // Request is dropped on error (including timeout errors from window pool)
                 });
@@ -357,35 +393,48 @@ export class WebSocketManager {
         }
     }
 
-    private async processDataRequest(dataRequest: DataRequest, batch_execution = false, batch_id = ''): Promise<void> {
-        // No error_callback_endpoint on this job means there's nowhere to
-        // post a report, so skip creating a job trace and all the Logger
-        // hook / event-collection overhead that comes with it - none of it
-        // would ever be sent anywhere. Just run the job like before this
-        // observability layer existed.
-        if (!hasErrorReporting(dataRequest)) {
-            return this.runDataRequest(dataRequest, batch_execution, batch_id);
-        }
-
-        const trace = createJobTrace();
-        await runWithJobTrace(trace, async () => {
-            try {
-                await this.runDataRequest(dataRequest, batch_execution, batch_id);
-            } catch (error) {
-                await reportJobError({
-                    dataRequest,
-                    error,
-                    severity: 'fatal',
-                    stage: currentJobTrace()?.stage,
-                    batch_execution,
-                    batch_id,
-                });
-                throw error;
+    private async processDataRequest(dataRequest: DataRequest, batch_execution = false, batch_id = '', generation = this.jobGeneration): Promise<void> {
+        this.jobsInProgress++;
+        try {
+            // No error_callback_endpoint on this job means there's nowhere to
+            // post a report, so skip creating a job trace and all the Logger
+            // hook / event-collection overhead that comes with it - none of it
+            // would ever be sent anywhere. Just run the job like before this
+            // observability layer existed.
+            if (!hasErrorReporting(dataRequest)) {
+                return await this.runDataRequest(dataRequest, batch_execution, batch_id, generation);
             }
-        });
+
+            const trace = createJobTrace();
+            await runWithJobTrace(trace, async () => {
+                try {
+                    await this.runDataRequest(dataRequest, batch_execution, batch_id, generation);
+                } catch (error) {
+                    if (this.isStaleJob(generation)) {
+                        Logger.log(`[WebSocketManager]: Job ${dataRequest.recordID} dropped after reset`);
+                        return;
+                    }
+                    await reportJobError({
+                        dataRequest,
+                        error,
+                        severity: 'fatal',
+                        stage: currentJobTrace()?.stage,
+                        batch_execution,
+                        batch_id,
+                    });
+                    throw error;
+                }
+            });
+        } finally {
+            this.jobsInProgress--;
+        }
     }
 
-    private async runDataRequest(dataRequest: DataRequest, batch_execution = false, batch_id = ''): Promise<void> {
+    private isStaleJob(generation: number): boolean {
+        return generation !== this.jobGeneration;
+    }
+
+    private async runDataRequest(dataRequest: DataRequest, batch_execution = false, batch_id = '', generation = this.jobGeneration): Promise<void> {
         const trace = currentJobTrace();
         trace?.mark('accepted', 'Job accepted', {
             request_type: classifyRequestType(dataRequest),
@@ -439,6 +488,11 @@ export class WebSocketManager {
             processedContent = await processUrl(dataRequest);
         }
 
+        if (this.isStaleJob(generation)) {
+            Logger.log(`[WebSocketManager]: Job ${dataRequest.recordID} dropped after reset`);
+            return;
+        }
+
         if (hasErrorReporting(dataRequest)) {
             const failedActions = (dataRequest.actionResults || []).filter(
                 (result) => result.status === 'failed' || result.status === 'timeout'
@@ -483,7 +537,7 @@ export class WebSocketManager {
                 "[processDataRequest] : error in cereal processing => ",
                 e,
             );
-            if (hasErrorReporting(dataRequest)) {
+            if (hasErrorReporting(dataRequest) && !this.isStaleJob(generation)) {
                 await reportJobError({
                     dataRequest,
                     error: e,
@@ -494,6 +548,11 @@ export class WebSocketManager {
                 });
             }
             cereal_result = {};
+        }
+
+        if (this.isStaleJob(generation)) {
+            Logger.log(`[WebSocketManager]: Job ${dataRequest.recordID} dropped after reset`);
+            return;
         }
 
         trace?.mark('save_crawl', 'Posting crawl result');
@@ -511,6 +570,190 @@ export class WebSocketManager {
 
         incrementRequestCount();
         trace?.mark('completed', 'Job completed');
+    }
+
+    /**
+     * Returns the SDK to a fresh state: drops all current jobs, closes every
+     * SDK window, then reconnects. Stored data (cookies, storage, opt-in
+     * status, request counts) is left untouched. The outcome is posted to the
+     * event's callback endpoint once the new connection is open.
+     */
+    private async handleResetEvent(payload: { [key: string]: unknown }): Promise<void> {
+        const event = parseMaintenanceEvent(payload);
+        if (!event) {
+            Logger.log("[WebSocketManager]: Ignored reset event: callback_endpoint must be an HTTPS URL");
+            return;
+        }
+
+        const startedAt = Date.now();
+        let outcome: { status: 'ok' | 'error'; reason?: string };
+        if (this.resetInProgress) {
+            Logger.log("[WebSocketManager]: Reset ignored - a reset is already running");
+            outcome = { status: 'error', reason: 'already_running' };
+        } else if (startedAt - this.lastResetAt < this.resetCooldownMs) {
+            Logger.log("[WebSocketManager]: Reset ignored - last reset was too recent");
+            outcome = { status: 'error', reason: 'cooldown' };
+        } else {
+            this.resetInProgress = true;
+            this.lastResetAt = startedAt;
+            try {
+                outcome = await this.performReset();
+            } catch (error) {
+                Logger.error(`[WebSocketManager]: Reset failed - ${error}`);
+                outcome = { status: 'error', reason: 'unexpected_error' };
+            } finally {
+                this.resetInProgress = false;
+            }
+        }
+
+        await postToCallback(event.callbackEndpoint, {
+            request_id: event.requestId,
+            node_identifier: this.identifier,
+            version: VERSION,
+            status: outcome.status,
+            ...(outcome.reason ? { reason: outcome.reason } : {}),
+            duration_ms: Date.now() - startedAt,
+        });
+    }
+
+    private async performReset(): Promise<{ status: 'ok' | 'error'; reason?: string }> {
+        Logger.log("[WebSocketManager]: Reset requested, restarting SDK services...");
+        this.jobGeneration++;
+
+        // Close the socket without marking the SDK as voluntarily
+        // disconnected, so an opt-out or host shutdown that happens while the
+        // reset runs is still detected below.
+        this.closeSocketForReset();
+        await Promise.all([
+            getWindowPool().shutdown(),
+            getCerealManager().shutdown(),
+            shutdownJarWindow(),
+        ]);
+
+        if (this.isVoluntarilyDisconnected) {
+            Logger.log("[WebSocketManager]: SDK was stopped during reset, not reconnecting");
+            return { status: 'error', reason: 'stopped' };
+        }
+
+        // Make sure a failed reconnect still goes through the normal retry path.
+        this.reconnectAttempts = 0;
+        if (!this.healthCheckInterval) {
+            this.startHealthCheck();
+        }
+
+        const started = await this.initialize(this.identifier);
+        if (!started) {
+            Logger.log("[WebSocketManager]: Reconnect after reset did not start, regular retries will continue");
+            return { status: 'error', reason: 'reconnect_failed' };
+        }
+
+        const opened = await this.waitForOpen(this.resetReconnectTimeoutMs);
+        if (!opened) {
+            if (this.isVoluntarilyDisconnected) {
+                return { status: 'error', reason: 'stopped' };
+            }
+            Logger.log("[WebSocketManager]: Reconnect after reset timed out, regular retries will continue");
+            return { status: 'error', reason: 'reconnect_timeout' };
+        }
+
+        Logger.log("[WebSocketManager]: Reset complete");
+        return { status: 'ok' };
+    }
+
+    /**
+     * Closes the current socket and cancels pending connection work, but
+     * unlike disconnect() keeps the SDK in its running state. The old
+     * socket's handlers are detached first so its late close event cannot
+     * affect the new connection.
+     */
+    private closeSocketForReset(): void {
+        this.abortApprovalRequest();
+        this.clearDeniedApprovalRetry();
+        if (this.reconnectTimeout) {
+            clearTimeout(this.reconnectTimeout);
+            this.reconnectTimeout = null;
+        }
+        this.stopPing();
+        if (this.ws) {
+            const ws = this.ws;
+            this.ws = null;
+            ws.onopen = null;
+            ws.onclose = null;
+            ws.onmessage = null;
+            ws.onerror = () => { /* socket is being discarded */ };
+            ws.removeAllListeners('pong');
+            ws.close();
+        }
+    }
+
+    private waitForOpen(timeoutMs: number): Promise<boolean> {
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            return Promise.resolve(true);
+        }
+        return new Promise(resolve => {
+            const waiter = () => {
+                clearTimeout(timer);
+                resolve(true);
+            };
+            const timer = setTimeout(() => {
+                this.openWaiters = this.openWaiters.filter(w => w !== waiter);
+                resolve(false);
+            }, timeoutMs);
+            this.openWaiters.push(waiter);
+        });
+    }
+
+    private notifyOpenWaiters(): void {
+        const waiters = this.openWaiters;
+        this.openWaiters = [];
+        waiters.forEach(waiter => waiter());
+    }
+
+    /**
+     * Posts a summary of the SDK's own resource usage (windows, jobs,
+     * memory) to the event's callback endpoint. Read-only.
+     */
+    private async handleHealthCheckEvent(payload: { [key: string]: unknown }): Promise<void> {
+        const event = parseMaintenanceEvent(payload);
+        if (!event) {
+            Logger.log("[WebSocketManager]: Ignored health_check event: callback_endpoint must be an HTTPS URL");
+            return;
+        }
+
+        let report: unknown;
+        try {
+            report = buildHealthReport({
+                requestId: event.requestId,
+                nodeIdentifier: this.identifier,
+                connectionState: this.getConnectionState(),
+                reconnectAttempts: Math.max(this.reconnectAttempts, 0),
+                jobsInProgress: this.jobsInProgress,
+                resetInProgress: this.resetInProgress,
+                startedAt: this.startedAt,
+            });
+        } catch (error) {
+            Logger.error(`[WebSocketManager]: Failed to build health report - ${error}`);
+            report = {
+                request_id: event.requestId,
+                node_identifier: this.identifier,
+                version: VERSION,
+                status: 'error',
+                reason: 'report_unavailable',
+            };
+        }
+        await postToCallback(event.callbackEndpoint, report);
+    }
+
+    private getConnectionState(): ConnectionState {
+        if (!this.ws) {
+            return this.isConnecting ? 'connecting' : 'closed';
+        }
+        switch (this.ws.readyState) {
+            case WebSocket.OPEN: return 'open';
+            case WebSocket.CONNECTING: return 'connecting';
+            case WebSocket.CLOSING: return 'closing';
+            default: return 'closed';
+        }
     }
 
     private async handleRateLimitReached(): Promise<void> {

@@ -252,6 +252,11 @@ export async function executeWithJarWindow<T>(
     );
 }
 
+/** The persistent jar window, if one is currently open. */
+export function getOpenJarWindow(): BrowserWindow | undefined {
+    return jarWindow && !jarWindow.isDestroyed() ? jarWindow : undefined;
+}
+
 export async function shutdownJarWindow(): Promise<void> {
     Logger.log("[Jar] Shutting down persist window");
     shuttingDown = true;

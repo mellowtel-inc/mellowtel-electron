@@ -1008,6 +1008,13 @@ export class WindowPool {
     }
 
     /**
+     * Live windows currently owned by the pool.
+     */
+    public getOwnedWindows(): BrowserWindow[] {
+        return this.pool.map(pw => pw.window).filter(win => !win.isDestroyed());
+    }
+
+    /**
      * Shutdown the pool and cleanup all resources
      */
     public async shutdown(): Promise<void> {
