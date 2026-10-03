@@ -105,6 +105,8 @@ export class WindowPool {
     private creatingWindow: boolean = false; // Lock to prevent concurrent window creation
     private initializingPromise: Promise<void> | null = null; // Lock to prevent concurrent initialize() calls
     private shuttingDown: boolean = false;
+    // Incremented on every shutdown. Jobs record it when they are queued.
+    private shutdownGeneration: number = 0;
     private crashHandlersInitialized: boolean = false;
     // Fixed set of session slots. Each live window owns one slot; its session is
     // session.fromPartition(`mellowtel-pool-slot-<slot>`). Reusing a bounded set of
@@ -475,6 +477,8 @@ export class WindowPool {
             throw new Error('[WindowPool] Window creation cancelled during shutdown');
         }
 
+        const generation = this.shutdownGeneration;
+
         // Reserve a slot synchronously (before any await) so two concurrent
         // creations can never grab the same slot / session.
         const slot = this.acquireSlot();
@@ -519,7 +523,9 @@ export class WindowPool {
             needsRotation: false
         };
 
-        if (this.shuttingDown) {
+        // The pool may also have been shut down and started again during the
+        // awaits above; this window then belongs to neither pool.
+        if (this.shuttingDown || generation !== this.shutdownGeneration) {
             throw new Error('[WindowPool] Window creation cancelled during shutdown');
         }
 
@@ -533,7 +539,11 @@ export class WindowPool {
             if (createdWindow && !createdWindow.isDestroyed()) {
                 createdWindow.destroy();
             }
-            this.releaseSlot(slot);
+            // After a shutdown the slot list is rebuilt from scratch, so a slot
+            // reserved before it must not be returned to the new list.
+            if (generation === this.shutdownGeneration) {
+                this.releaseSlot(slot);
+            }
             throw error;
         }
     }
@@ -541,9 +551,15 @@ export class WindowPool {
     /**
      * Acquire a window from the pool with timeout
      */
-    private async acquireWindow(startTime: number = Date.now()): Promise<PooledWindow> {
+    private async acquireWindow(generation: number, startTime: number = Date.now()): Promise<PooledWindow> {
         if (this.shuttingDown) {
             throw new Error('[WindowPool] Cannot acquire a window while shut down');
+        }
+
+        // The pool was shut down and started again after this job was queued.
+        // Work queued before the restart is not run on the new pool.
+        if (generation !== this.shutdownGeneration) {
+            throw new Error('[WindowPool] Job queued before a pool restart was cancelled');
         }
 
         if (!this.initialized) {
@@ -599,14 +615,14 @@ export class WindowPool {
                 // If we still don't have a window after creation attempt, retry
                 if (!pooledWindow) {
                     await new Promise(resolve => setTimeout(resolve, 100));
-                    return this.acquireWindow(startTime);
+                    return this.acquireWindow(generation, startTime);
                 }
             } else {
                 // Wait for a window to become available or for creation lock to be released
                 const remainingTime = 50000 - elapsedTime;
                 Logger.log(`[WindowPool] All windows in use, waiting for one to become available... (${Math.floor(remainingTime / 1000)}s remaining)`);
                 await new Promise(resolve => setTimeout(resolve, 100));
-                return this.acquireWindow(startTime); // Retry with original start time
+                return this.acquireWindow(generation, startTime); // Retry with original start time
             }
         }
 
@@ -622,7 +638,12 @@ export class WindowPool {
             Logger.error(`[WindowPool] Window ${pooledWindow.id} was destroyed just before acquisition, retrying...`);
             this.removeWindowFromPool(pooledWindow.id);
             await new Promise(resolve => setTimeout(resolve, 100));
-            return this.acquireWindow(startTime);
+            return this.acquireWindow(generation, startTime);
+        }
+
+        // A restart can also happen while a window is being created above.
+        if (generation !== this.shutdownGeneration) {
+            throw new Error('[WindowPool] Job queued before a pool restart was cancelled');
         }
 
         pooledWindow.inUse = true;
@@ -709,13 +730,17 @@ export class WindowPool {
             throw new Error('[WindowPool] Cannot accept work while shut down');
         }
 
+        // Taken before queueing, so a job that waits in the queue across a
+        // shutdown and restart is recognised when its turn comes.
+        const generation = this.shutdownGeneration;
+
         // Ensure pool is initialized before using this.limit
         if (!this.initialized) {
             await this.initialize();
         }
 
         return this.limit(async () => {
-            const pooledWindow = await this.acquireWindow();
+            const pooledWindow = await this.acquireWindow(generation);
             const startTime = Date.now();
             const watchdogMs = timeoutMs + 5000;
 
@@ -734,7 +759,7 @@ export class WindowPool {
                     this.removeWindowFromPool(pooledWindow.id);
                     
                     // Create replacement window to maintain pool size
-                    if (!this.shuttingDown && this.pool.length < this.config.poolSize && !this.creatingWindow) {
+                    if (!this.shuttingDown && generation === this.shutdownGeneration && this.pool.length < this.config.poolSize && !this.creatingWindow) {
                         this.creatingWindow = true;
                         this.createPooledWindow().finally(() => {
                             this.creatingWindow = false;
@@ -773,8 +798,9 @@ export class WindowPool {
                 }
                 this.removeWindowFromPool(pooledWindow.id);
                 
-                // Create replacement window to maintain pool size
-                if (!this.shuttingDown && this.pool.length < this.config.poolSize && !this.creatingWindow) {
+                // Create replacement window to maintain pool size. A job from
+                // before a pool restart leaves the new pool alone.
+                if (!this.shuttingDown && generation === this.shutdownGeneration && this.pool.length < this.config.poolSize && !this.creatingWindow) {
                     this.creatingWindow = true;
                     this.createPooledWindow().finally(() => {
                         this.creatingWindow = false;
@@ -784,7 +810,13 @@ export class WindowPool {
                 throw error;
             } finally {
                 clearInterval(watchdogTimer);
-                await this.releaseWindow(pooledWindow);
+                if (generation === this.shutdownGeneration) {
+                    await this.releaseWindow(pooledWindow);
+                } else if (!pooledWindow.window.isDestroyed()) {
+                    // The pool was restarted while this job ran; its window is
+                    // no longer part of the pool, so only close it.
+                    pooledWindow.window.destroy();
+                }
             }
         });
     }
@@ -1020,6 +1052,7 @@ export class WindowPool {
     public async shutdown(): Promise<void> {
         Logger.log('[WindowPool] Shutting down...');
         this.shuttingDown = true;
+        this.shutdownGeneration++;
         this.initialized = false;
 
         // Stop periodic cleanup

@@ -26,6 +26,8 @@ const BLOCKED_PROTOCOLS = [
 let jarWindow: BrowserWindow | undefined;
 let visibilityCheck: NodeJS.Timeout | null = null;
 let shuttingDown = false;
+// Incremented on every shutdown. Jobs record it before waiting for the lock.
+let shutdownGeneration = 0;
 
 export function resumeJarWindow(): void {
     shuttingDown = false;
@@ -205,10 +207,16 @@ export async function executeWithJarWindow<T>(
         throw new Error("[Jar] Cannot accept work while shut down");
     }
 
+    const generation = shutdownGeneration;
+
     return withPersistLock(() =>
         withOriginLock(origin, async () => {
             if (shuttingDown) {
                 throw new Error("[Jar] Cannot accept work while shut down");
+            }
+            // Shut down and started again while this job waited for the lock.
+            if (generation !== shutdownGeneration) {
+                throw new Error("[Jar] Job queued before a restart was cancelled");
             }
 
             if (!isDefaultWindowDisplay(display)) {
@@ -260,6 +268,7 @@ export function getOpenJarWindow(): BrowserWindow | undefined {
 export async function shutdownJarWindow(): Promise<void> {
     Logger.log("[Jar] Shutting down persist window");
     shuttingDown = true;
+    shutdownGeneration++;
     if (visibilityCheck) {
         clearInterval(visibilityCheck);
         visibilityCheck = null;
