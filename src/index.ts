@@ -13,6 +13,7 @@ import {
 import { BrowserWindow } from 'electron'
 import { showConsentSettings } from "./consent/consent-setttings";
 import { showConsentDialog } from "./consent/consent-dialog";
+import { installAppLifecycle } from "./utils/app-lifecycle";
 
 // Export app setup utility for command-line flags
 export { setupMellowtelApp } from "./utils/app-setup";
@@ -42,6 +43,12 @@ export default class Mellowtel {
     Logger.disableLogs = this.disableLogs;
     this.nodeId = getOrGenerateIdentifier(configurationKey);
     Logger.log(this.nodeId);
+
+    // Follow the host's lifetime even if it never calls shutdown().
+    installAppLifecycle({
+      onLastHostWindowClosed: () => void this.wsManager.releaseWorkers(),
+      onAppQuit: () => void this.shutdown(),
+    });
   }
 
   /**

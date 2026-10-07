@@ -8,6 +8,7 @@ import pLimit from 'p-limit';
 import { DIALOG_BLOCK_SOURCE } from './dialog-block-source';
 import { attachClientHeaderHook, getDeviceClient } from './client';
 import { DEFAULT_SCRAPE_TIMEOUT_MS } from './data-request';
+import { markSdkWindow } from './app-lifecycle';
 
 // Preload that stubs alert/confirm/prompt before page scripts run (fixes
 // Windows dialog leak). DIALOG_BLOCK_SOURCE is a string constant imported
@@ -340,6 +341,7 @@ export class WindowPool {
                 spellcheck: false,
             }
         });
+        markSdkWindow(win);
 
         win.webContents.on('will-prevent-unload', (event) => {
             Logger.log(`[WindowPool] Prevented beforeunload dialog in ${windowId}`);

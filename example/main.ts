@@ -33,8 +33,9 @@ app.whenReady().then(async () => {
   await mellowtel.requestConsent(win, "Get 3 months free")
   await mellowtel.init()
 
-  // SDK worker windows are hidden BrowserWindows, so release them before the
-  // host's last visible window closes and Electron evaluates window-all-closed.
+  // Optional: the SDK already releases its hidden worker windows when the last
+  // host window closes and shuts down on will-quit. Calling shutdown() here
+  // just frees everything a little earlier.
   win.on('closed', () => {
     if (process.platform !== 'darwin') {
       void mellowtel?.shutdown();

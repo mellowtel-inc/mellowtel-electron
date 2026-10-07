@@ -2,6 +2,7 @@ import { BrowserWindow } from "electron";
 import { Logger } from "../../logger/logger";
 import { DEFAULT_WINDOW_DISPLAY, getDialogBlockPreloadPath, isDefaultWindowDisplay, WindowDisplay } from "../window-pool";
 import { getDeviceClient } from "../client";
+import { markSdkWindow } from "../app-lifecycle";
 import { getJarSession, hasJarSession, withOriginLock, withPersistLock } from "./store";
 
 const BLOCKED_PROTOCOLS = [
@@ -170,6 +171,7 @@ function createJarWindow(display: WindowDisplay = DEFAULT_WINDOW_DISPLAY): Brows
             spellcheck: false,
         },
     });
+    markSdkWindow(win);
     attachHardening(win, display);
     Logger.log(`[Jar] Created persist-backed window (visible=${display.visible}, offscreen=${display.offscreen})`);
     return win;

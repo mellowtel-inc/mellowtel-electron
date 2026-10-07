@@ -6,6 +6,7 @@ import TurndownService from 'turndown';
 import { DataRequest } from './data-request';
 import { runActions } from './actions';
 import { getWindowPool, windowPoolConfigFor } from './window-pool';
+import { markSdkWindow } from './app-lifecycle';
 import { executeWithJarWindow, parseJobOrigin, resetJarAll, resetJarOrigin, restoreCookies, snapshotCookies } from './jar';
 import { applyJobClient, buildStealthScript, releaseJobClient } from './client';
 import { attachMeucci, injectMeucciNow, collectAndSendCaptures, parseBurkeObject, type MeucciHandle, type MeucciConfig } from './meucci-helpers';
@@ -530,6 +531,7 @@ export async function cerealMain(
             contextIsolation: true,
         },
     });
+    markSdkWindow(win);
 
     win.webContents.on('console-message', (event, level, message, line, sourceId) => {
         Logger.log(`[Cereal Window Console] ${message} (source: ${sourceId}, line: ${line})`);

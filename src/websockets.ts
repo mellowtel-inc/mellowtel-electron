@@ -38,6 +38,7 @@ export class WebSocketManager {
     private reconnectTimeout: NodeJS.Timeout | null = null;
     private approvalAbort: AbortController | null = null;
     private deniedApprovalRetryTimeout: NodeJS.Timeout | null = null;
+    private workersReleased: boolean = false;
     private readonly pingIntervalTime: number = 60000; // 60 seconds
     private readonly pongTimeoutTime: number = 5000; // receive pong back in < 5 seconds
     private readonly healthCheckIntervalTime: number = 15 * 60 * 1000; // 15 minutes
@@ -58,9 +59,7 @@ export class WebSocketManager {
     public async initialize(identifier: string): Promise<boolean> {
         this.identifier = identifier;
         this.isVoluntarilyDisconnected = false;
-        getWindowPool().resume();
-        getCerealManager().resume();
-        resumeJarWindow();
+        this.resumeWorkers();
 
         if (this.ws !== null) {
             Logger.log("[WebSocketManager]: WebSocket is already connected");
@@ -286,6 +285,13 @@ export class WebSocketManager {
     private async handleIncomingMessage(data: any): Promise<void> {
         try {
             const json = JSON.parse(data.data);
+
+            // Worker windows may have been released when the host closed its
+            // last window (e.g. a tray app); let them be created again on demand.
+            if (this.workersReleased) {
+                Logger.log("[WebSocketManager]: Resuming released worker windows");
+                this.resumeWorkers();
+            }
 
             if (json.type_event === 'jar') {
                 await handleJarEvent(json);
@@ -568,6 +574,27 @@ export class WebSocketManager {
      */
     public async shutdown(): Promise<void> {
         this.disconnect();
+        await this.destroyWorkers();
+    }
+
+    /**
+     * Destroy all worker windows but stay connected. The managers stay in their
+     * shut-down state until the next job resumes them, so a window that is
+     * mid-creation right now destroys itself instead of outliving the release.
+     */
+    public async releaseWorkers(): Promise<void> {
+        this.workersReleased = true;
+        await this.destroyWorkers();
+    }
+
+    private resumeWorkers(): void {
+        this.workersReleased = false;
+        getWindowPool().resume();
+        getCerealManager().resume();
+        resumeJarWindow();
+    }
+
+    private async destroyWorkers(): Promise<void> {
         await Promise.all([
             getWindowPool().shutdown(),
             getCerealManager().shutdown(),

@@ -1,4 +1,5 @@
 import { BrowserWindow } from 'electron';
+import { markSdkWindow } from './app-lifecycle';
 import { Logger } from '../logger/logger';
 import { ObservedError } from '../observability/observed-error';
 
@@ -515,6 +516,7 @@ export class CerealManager {
                 offscreen: true,
             }
         });
+        markSdkWindow(win);
 
         this.ownedWindows.add(win);
         if (reason === 'rotation' || reason === 'crash-replace') {
