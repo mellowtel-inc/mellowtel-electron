@@ -28,3 +28,26 @@ and the names `localhost` / `*.localhost`.
 
 **Rule for callers:** connect to the `address` the check returned. Never resolve the name again
 before connecting, or DNS rebinding can swap in a private address.
+
+## safe-fetch.ts
+
+`safeFetch(url, init)` is a drop-in for `fetch` in the job paths.
+
+- The check runs inside the connection's own DNS lookup, so the address checked is the address
+  connected (one resolution per new connection, no rebinding window).
+- TLS SNI, certificate hostname check and `Host` keep the original name; certificate validation is
+  unchanged.
+- Redirects are followed here, max 20 like `fetch`, and every hop is checked again. Method, body
+  and header rewriting follow the fetch spec (302/303 POST → GET; 307/308 keep; `Authorization`,
+  `Cookie` dropped cross-origin).
+- Policy refusals throw `DestinationBlockedError` (`isEgressBlocked(err)` is true). DNS failures
+  and other network errors throw `TypeError('fetch failed')` with the original cause, like `fetch`.
+
+`createSafeFetch({...})` takes test-only seams (resolver, address rule, ports, CA). Production code
+uses `safeFetch`, which always applies the real rules.
+
+## Tests
+
+- `npm test`: unit and integration (`test/net`). Includes real-network cases; `NET_TESTS=0` skips them.
+- `npm run test:perf`: load, CPU, accelerated soak and failure tests (`test/perf`).
+  `SOAK_MINUTES=60` adds a real-rate paced soak. `PERF_OUT=file.json` writes a summary.

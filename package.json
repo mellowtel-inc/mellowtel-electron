@@ -33,7 +33,8 @@
     "prepare": "npm run build",
     "prepublishOnly": "npm run build",
     "test": "vitest run",
-    "test:actions": "npm run build && npx tsc example/actions-playground.ts --esModuleInterop --module commonjs --moduleResolution node --target ES2020 --strict --skipLibCheck && electron example/actions-playground.js"
+    "test:actions": "npm run build && npx tsc example/actions-playground.ts --esModuleInterop --module commonjs --moduleResolution node --target ES2020 --strict --skipLibCheck && electron example/actions-playground.js",
+    "test:perf": "vitest run --config vitest.perf.config.ts"
   },
   "devDependencies": {
     "electron": "^33.2.0",

@@ -33,19 +33,28 @@ export type BlockReason =
     | 'blocked_host'
     | 'blocked_address'
     | 'dns_failed'
-    | 'no_address'
-    | 'too_many_redirects';
+    | 'no_address';
+
+/**
+ * Reasons that mean "the destination itself is not allowed". dns_failed and
+ * no_address are lookup failures, not policy refusals: the fetch path reports
+ * them like an ordinary network error so EGRESS_BLOCKED stays a clean signal.
+ */
+export const POLICY_REASONS: ReadonlySet<BlockReason> = new Set<BlockReason>([
+    'bad_url', 'bad_scheme', 'blocked_port', 'blocked_host', 'blocked_address',
+]);
 
 export class DestinationBlockedError extends Error {
     readonly code = 'EGRESS_BLOCKED' as const;
     readonly reason: BlockReason;
     readonly host: string;
 
-    constructor(reason: BlockReason, host: string, detail?: string) {
+    constructor(reason: BlockReason, host: string, detail?: string, cause?: unknown) {
         super(`[EGRESS_BLOCKED] ${reason}: ${host || '(empty host)'}${detail ? ` (${detail})` : ''}`);
         this.name = 'DestinationBlockedError';
         this.reason = reason;
         this.host = host;
+        if (cause !== undefined) (this as Error & { cause?: unknown }).cause = cause;
     }
 }
 
@@ -66,6 +75,16 @@ export const systemResolver: Resolver = async (host) => {
 export interface CheckOptions {
     mode: EgressMode;
     resolver?: Resolver;
+}
+
+/**
+ * Test seams only. Production callers never pass these; the defaults are the
+ * real rules. `ports` replaces the mode's port list; `isBlocked` replaces the
+ * address rule for resolved (non-literal) hosts.
+ */
+export interface PolicyOverrides {
+    ports?: readonly number[];
+    isBlocked?: (ip: string) => boolean;
 }
 
 export interface CheckedDestination {
@@ -222,7 +241,7 @@ function stripBrackets(h: string): string {
     return h.startsWith('[') && h.endsWith(']') ? h.slice(1, -1) : h;
 }
 
-function parseUrlTarget(input: string | URL, mode: EgressMode): ParsedTarget {
+function parseUrlTarget(input: string | URL, mode: EgressMode, ports?: readonly number[]): ParsedTarget {
     let url: URL;
     try {
         url = typeof input === 'string' ? new URL(input) : new URL(input.href);
@@ -234,12 +253,12 @@ function parseUrlTarget(input: string | URL, mode: EgressMode): ParsedTarget {
         throw new DestinationBlockedError('bad_scheme', host, url.protocol);
     }
     const port = url.port ? Number(url.port) : url.protocol === 'https:' ? 443 : 80;
-    return finishTarget(host, port, mode);
+    return finishTarget(host, port, mode, ports);
 }
 
-function finishTarget(host: string, port: number, mode: EgressMode): ParsedTarget {
+function finishTarget(host: string, port: number, mode: EgressMode, ports?: readonly number[]): ParsedTarget {
     if (!host) throw new DestinationBlockedError('bad_url', '');
-    if (!ALLOWED_PORTS[mode].includes(port)) {
+    if (!(ports ?? ALLOWED_PORTS[mode]).includes(port)) {
         throw new DestinationBlockedError('blocked_port', host, `port ${port}`);
     }
     if (isLocalhostName(host)) throw new DestinationBlockedError('blocked_host', host);
@@ -270,15 +289,23 @@ function parseHostPortTarget(host: string, port: number, mode: EgressMode): Pars
  * Synchronous pre-check of a URL: scheme, port, localhost names and IP
  * literals. Host names still need resolveAndCheck() before connecting.
  */
-export function precheckUrl(input: string | URL, mode: EgressMode): { host: string; port: number; literal: boolean } {
-    return parseUrlTarget(input, mode);
+export function precheckUrl(
+    input: string | URL,
+    mode: EgressMode,
+    overrides: Pick<PolicyOverrides, 'ports'> = {},
+): { host: string; port: number; literal: boolean } {
+    return parseUrlTarget(input, mode, overrides.ports);
 }
 
 /**
  * Resolves a host name and checks every address. Returns the addresses in
  * resolver order; the first one is the one to connect to.
  */
-export async function resolveAndCheck(host: string, resolver: Resolver = systemResolver): Promise<ResolvedAddress[]> {
+export async function resolveAndCheck(
+    host: string,
+    resolver: Resolver = systemResolver,
+    isBlocked: (ip: string) => boolean = isBlockedAddress,
+): Promise<ResolvedAddress[]> {
     if (isIP(host)) {
         if (isBlockedAddress(host)) throw new DestinationBlockedError('blocked_address', host);
         return [{ address: host, family: isIP(host) }];
@@ -289,11 +316,11 @@ export async function resolveAndCheck(host: string, resolver: Resolver = systemR
         addrs = await resolver(host);
     } catch (e) {
         const code = (e as { code?: string })?.code;
-        throw new DestinationBlockedError('dns_failed', host, code);
+        throw new DestinationBlockedError('dns_failed', host, code, e);
     }
     if (!addrs || addrs.length === 0) throw new DestinationBlockedError('no_address', host);
     for (const a of addrs) {
-        if (isBlockedAddress(a.address)) throw new DestinationBlockedError('blocked_address', host);
+        if (isBlocked(a.address)) throw new DestinationBlockedError('blocked_address', host);
     }
     return addrs.map((a) => ({ address: a.address, family: a.family || isIP(a.address) }));
 }
