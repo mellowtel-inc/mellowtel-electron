@@ -32,13 +32,14 @@
     "build": "tsc",
     "prepare": "npm run build",
     "prepublishOnly": "npm run build",
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "vitest run",
     "test:actions": "npm run build && npx tsc example/actions-playground.ts --esModuleInterop --module commonjs --moduleResolution node --target ES2020 --strict --skipLibCheck && electron example/actions-playground.js"
   },
   "devDependencies": {
     "electron": "^33.2.0",
     "ts-loader": "^9.5.1",
     "typescript": "^5.6.3",
+    "vitest": "2.1.9",
     "webpack": "^5.96.1",
     "webpack-cli": "^5.1.4"
   },
@@ -50,6 +51,7 @@
     "p-limit": "3.1.0",
     "sweetalert2": "^11.14.5",
     "turndown": ">=7.1.2",
+    "undici": "6.29.1",
     "ws": "*"
   },
   "optionalDependencies": {
