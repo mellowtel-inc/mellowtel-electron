@@ -206,27 +206,45 @@ describe('1.2-T5 soak (accelerated): memory and sockets stay flat', () => {
     });
 
     const minutes = env('SOAK_MINUTES', 0);
-    it.runIf(minutes > 0)(`paced soak at real device rate for ${minutes} min`, async () => {
+    it.runIf(minutes > 0)(`paced soak at real device rate for ${minutes} min (safeFetch + built-in fetch control)`, async () => {
         const rate = env('SOAK_RATE', 1.74);
         const sf = newSafe();
-        const end = Date.now() + minutes * 60_000;
+        const t0 = Date.now();
+        const end = t0 + minutes * 60_000;
         const samples: Array<{ min: number; heapMB: number; rssMB: number; sockets: number }> = [];
-        let i = 0, errors = 0, nextSample = Date.now();
+        // Alternate safe and built-in requests, so an environment hiccup hits both arms.
+        const arms = {
+            safe: { requests: 0, errors: [] as Array<{ min: number; error: string }> },
+            plain: { requests: 0, errors: [] as Array<{ min: number; error: string }> },
+        };
+        const describeErr = (e: any) => [e?.name, e?.message, e?.code, e?.cause?.code, e?.cause?.message].filter(Boolean).join(' | ');
+        let i = 0, nextSample = t0, maxGapMs = 0, last = t0;
         while (Date.now() < end) {
-            try { const r = await sf.fetch(`http://public.test:${h.port}${pathFor(i++)}`); await r.arrayBuffer(); } catch { errors++; }
-            if (Date.now() >= nextSample) {
+            const arm = i % 2 ? 'plain' : 'safe';
+            const path = pathFor(i++);
+            arms[arm].requests++;
+            try {
+                const r = arm === 'safe' ? await sf.fetch(`http://public.test:${h.port}${path}`) : await fetch(`http://127.0.0.1:${h.port}${path}`);
+                await r.arrayBuffer();
+            } catch (e) {
+                arms[arm].errors.push({ min: round((Date.now() - t0) / 60_000, 1), error: describeErr(e) });
+            }
+            const now = Date.now();
+            maxGapMs = Math.max(maxGapMs, now - last);
+            last = now;
+            if (now >= nextSample) {
                 gc();
                 const m = process.memoryUsage();
-                samples.push({ min: round((Date.now() - (end - minutes * 60_000)) / 60_000, 1), heapMB: round(m.heapUsed / 2 ** 20), rssMB: round(m.rss / 2 ** 20), sockets: tcpSockets() });
-                nextSample = Date.now() + 60_000;
+                samples.push({ min: round((now - t0) / 60_000, 1), heapMB: round(m.heapUsed / 2 ** 20), rssMB: round(m.rss / 2 ** 20), sockets: tcpSockets() });
+                nextSample = now + 60_000;
             }
             await new Promise((r) => setTimeout(r, 1000 / rate));
         }
         await sf.close();
         const half = Math.floor(samples.length / 2);
         const heapGrowth = samples[samples.length - 1].heapMB - samples[half].heapMB;
-        summary['1.2-T5-paced'] = { minutes, rate, requests: i, errors, heapGrowthMB: round(heapGrowth), maxSockets: Math.max(...samples.map((s) => s.sockets)), samples };
-        expect(errors).toBe(0);
+        summary['1.2-T5-paced'] = { minutes, rate, arms, maxGapBetweenRequestsMs: maxGapMs, heapGrowthMB: round(heapGrowth), maxSockets: Math.max(...samples.map((s) => s.sockets)), samples };
+        expect(arms.safe.errors).toEqual([]);
         expect(heapGrowth).toBeLessThan(5);
     });
 });
