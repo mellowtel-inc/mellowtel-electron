@@ -1,7 +1,7 @@
 /**
  * Destination check: decides whether this device may open a connection to a
- * host and port. Used by the job fetch paths (mode "fetch") and, later, by the
- * proxy tunnel (mode "proxy").
+ * host and port. Used by the job fetch paths (mode "fetch": ports 80 and 443).
+ * Mode "tls" allows port 443 only, for callers that only ever need HTTPS.
  *
  * Rules:
  * - Every address the host resolves to must be public. One private address
@@ -19,11 +19,11 @@
 import { promises as dns } from 'dns';
 import { isIP } from 'net';
 
-export type EgressMode = 'fetch' | 'proxy';
+export type EgressMode = 'fetch' | 'tls';
 
 export const ALLOWED_PORTS: Readonly<Record<EgressMode, readonly number[]>> = Object.freeze({
     fetch: Object.freeze([80, 443]),
-    proxy: Object.freeze([443]),
+    tls: Object.freeze([443]),
 });
 
 export type BlockReason =
@@ -267,7 +267,7 @@ function finishTarget(host: string, port: number, mode: EgressMode, ports?: read
     return { host, port, literal };
 }
 
-/** Normalises a bare host (proxy OPEN frame) through the same URL host parser. */
+/** Normalises a bare host through the same URL host parser. */
 function parseHostPortTarget(host: string, port: number, mode: EgressMode): ParsedTarget {
     if (!Number.isInteger(port) || port < 1 || port > 65535) {
         throw new DestinationBlockedError('blocked_port', host, `port ${port}`);
@@ -335,7 +335,7 @@ export async function checkDestination(input: string | URL, opts: CheckOptions):
     return complete(parseUrlTarget(input, opts.mode), opts.resolver);
 }
 
-/** Full check of a host + port (proxy OPEN frames). */
+/** Full check of a bare host + port (no URL). */
 export async function checkHostPort(host: string, port: number, opts: CheckOptions): Promise<CheckedDestination> {
     return complete(parseHostPortTarget(host, port, opts.mode), opts.resolver);
 }

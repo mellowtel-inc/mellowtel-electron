@@ -97,14 +97,14 @@ describe('1.1-T4 a host with any private address is refused', () => {
 });
 
 describe('1.1-T5 port allow-list per mode', () => {
-    it('proxy mode refuses 8080', async () => {
-        await expectBlocked(checkHostPort('example.com', 8080, { mode: 'proxy', resolver: mustNotResolve }), 'blocked_port');
+    it('tls mode refuses 8080', async () => {
+        await expectBlocked(checkHostPort('example.com', 8080, { mode: 'tls', resolver: mustNotResolve }), 'blocked_port');
     });
-    it('proxy mode refuses 80', async () => {
-        await expectBlocked(checkHostPort('example.com', 80, { mode: 'proxy', resolver: mustNotResolve }), 'blocked_port');
+    it('tls mode refuses 80', async () => {
+        await expectBlocked(checkHostPort('example.com', 80, { mode: 'tls', resolver: mustNotResolve }), 'blocked_port');
     });
-    it('proxy mode allows 443', async () => {
-        const r = await checkHostPort('example.com', 443, { mode: 'proxy', resolver: resolveTo('93.184.215.14') });
+    it('tls mode allows 443', async () => {
+        const r = await checkHostPort('example.com', 443, { mode: 'tls', resolver: resolveTo('93.184.215.14') });
         expect(r.address).toBe('93.184.215.14');
     });
     it('fetch mode refuses 8080 and allows 80/443', async () => {
@@ -120,8 +120,8 @@ describe('1.1-T5 port allow-list per mode', () => {
     it('unparseable URL is refused', async () => {
         await expectBlocked(checkDestination('not a url', { mode: 'fetch', resolver: mustNotResolve }), 'bad_url');
     });
-    it('proxy mode accepts IPv6 host without brackets', async () => {
-        await expectBlocked(checkHostPort('fe80::1', 443, { mode: 'proxy', resolver: mustNotResolve }), 'blocked_address');
+    it('tls mode accepts IPv6 host without brackets', async () => {
+        await expectBlocked(checkHostPort('fe80::1', 443, { mode: 'tls', resolver: mustNotResolve }), 'blocked_address');
     });
 });
 

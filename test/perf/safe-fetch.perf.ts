@@ -1,5 +1,5 @@
 /**
- * Plan cases 1.2-T4 (load), 1.2-T5 (soak), 1.2-T6 (CPU), 1.2-T7 (stress/failure).
+ * Test cases 1.2-T4 (load), 1.2-T5 (soak), 1.2-T6 (CPU), 1.2-T7 (stress/failure).
  *
  * Simulated: a local HTTP server stands in for target sites. "plain" is the
  * runtime's built-in fetch to the same server, i.e. what the SDK does today.

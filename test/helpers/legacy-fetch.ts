@@ -1,5 +1,5 @@
 /**
- * Reference oracle for story 1.3: the job fetch code exactly as it was before
+ * Reference oracle for the job-fetch tests: the job fetch code exactly as it was before
  * the destination check (mellowtel-electron 700.0.36), using the runtime's
  * built-in fetch. Tests compare the new paths against this.
  *

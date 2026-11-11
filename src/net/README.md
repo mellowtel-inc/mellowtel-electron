@@ -7,7 +7,7 @@ Stops the SDK from opening connections to the device owner's local network.
 | Export | Use |
 |---|---|
 | `checkDestination(url, { mode })` | Full check of a URL: scheme (http/https), port, localhost names, IP literals, then DNS. Resolves to `{ host, port, address, family, addresses }`. |
-| `checkHostPort(host, port, { mode })` | Same for a bare host and port, for example a proxy `OPEN` frame. |
+| `checkHostPort(host, port, { mode })` | Same for a bare host and port, when there is no URL. |
 | `precheckUrl(url, mode)` | Synchronous part only (no DNS). |
 | `resolveAndCheck(host)` | DNS part only: every A/AAAA address must be public. |
 | `isBlockedAddress(ip)` | True for any non-public IP literal. Invalid input is treated as blocked. |
@@ -18,7 +18,7 @@ Modes and allowed ports:
 | Mode | Ports | Used by |
 |---|---|---|
 | `fetch` | 80, 443 | `parser_job`, `method_endpoint` |
-| `proxy` | 443 | proxy tunnel (`src/proxy/`, not built yet) |
+| `tls` | 443 | callers that only need HTTPS (not used by the job paths) |
 
 Blocked: `0/8`, `10/8`, `100.64/10`, `127/8`, `169.254/16`, `172.16/12`, `192.0.0/24`, `192.0.2/24`,
 `192.168/16`, `198.18/15`, `198.51.100/24`, `203.0.113/24`, `224/4`, `240/4`, `::/96`, `64:ff9b:1::/48`,
