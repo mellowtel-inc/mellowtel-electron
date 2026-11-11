@@ -22,6 +22,7 @@ export interface Seen {
     headers: http.IncomingHttpHeaders;
     body: string;
     remoteAddress: string | undefined;
+    remotePort: number | undefined;
 }
 
 export interface Fixture {
@@ -37,7 +38,7 @@ function handler(seen: Seen[], scheme: 'http' | 'https', record = true) {
         req.on('data', (c) => chunks.push(c));
         req.on('end', () => {
             const body = Buffer.concat(chunks).toString('utf8');
-            if (record) seen.push({ method: req.method!, url: req.url!, host: req.headers.host, headers: req.headers, body, remoteAddress: req.socket.remoteAddress });
+            if (record) seen.push({ method: req.method!, url: req.url!, host: req.headers.host, headers: req.headers, body, remoteAddress: req.socket.remoteAddress, remotePort: req.socket.remotePort });
             const u = new URL(req.url!, `${scheme}://${req.headers.host}`);
             if (u.pathname === '/redirect') {
                 res.writeHead(Number(u.searchParams.get('status') ?? 302), { location: u.searchParams.get('to')! });
@@ -53,6 +54,14 @@ function handler(seen: Seen[], scheme: 'http' | 'https', record = true) {
                 res.writeHead(200, { 'content-type': 'text/plain' });
                 return res.end('end of chain');
             }
+            if (u.pathname === '/status') {
+                res.writeHead(Number(u.searchParams.get('code') ?? 500), { 'content-type': 'text/html; charset=utf-8' });
+                return res.end(u.searchParams.get('body') ?? '<h1>error</h1>');
+            }
+            if (u.pathname === '/page') {
+                res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+                return res.end('<!doctype html><html><head><title>t</title></head><body><p>héllo — ünïcode ✓</p></body></html>');
+            }
             if (u.pathname === '/loop') {
                 res.writeHead(302, { location: '/loop' });
                 return res.end();
@@ -67,7 +76,7 @@ function handler(seen: Seen[], scheme: 'http' | 'https', record = true) {
                 return res.end(Buffer.alloc(n, 120));
             }
             res.writeHead(200, { 'content-type': 'application/json', 'x-fixture': scheme });
-            res.end(JSON.stringify({ method: req.method, path: req.url, body, host: req.headers.host, authorization: req.headers.authorization ?? null, contentType: req.headers['content-type'] ?? null }));
+            res.end(JSON.stringify({ method: req.method, path: req.url, body, host: req.headers.host, authorization: req.headers.authorization ?? null, contentType: req.headers['content-type'] ?? null, custom: req.headers['x-custom'] ?? null }));
         });
     };
 }

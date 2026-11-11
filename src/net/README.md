@@ -51,3 +51,13 @@ uses `safeFetch`, which always applies the real rules.
 - `npm test`: unit and integration (`test/net`). Includes real-network cases; `NET_TESTS=0` skips them.
 - `npm run test:perf`: load, CPU, accelerated soak and failure tests (`test/perf`).
   `SOAK_MINUTES=60` adds a real-rate paced soak. `PERF_OUT=file.json` writes a summary.
+- `npm run test:electron`: builds, runs the unit suite on Electron's runtime (`ELECTRON_RUN_AS_NODE=1`),
+  then `test/electron/main-smoke.cjs` inside a real Electron main process (needs network).
+  Note: VS Code terminals export `ELECTRON_RUN_AS_NODE=1`; the smoke step unsets it.
+
+## Job paths using it
+
+`src/utils/job-fetch.ts`: `fetchParserContent` (`parser_job`) and `makeFetchRequest` (`method_endpoint`,
+re-exported from `data-helpers.ts`). A refusal is reported as job error code `EGRESS_BLOCKED` with
+`raw: { reason, host, ... }` — never the resolved address. DNS and network failures keep their old
+codes (`PARSER_FETCH_FAILED`, `FETCH_FAILED`).

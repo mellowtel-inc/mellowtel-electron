@@ -46,6 +46,7 @@ export interface SafeFetchClient {
 }
 
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+const NORMALISED_METHODS = new Set(['DELETE', 'GET', 'HEAD', 'OPTIONS', 'POST', 'PUT']);
 const BODY_HEADERS = ['content-encoding', 'content-language', 'content-location', 'content-type', 'content-length'];
 const CROSS_ORIGIN_DROP = ['authorization', 'proxy-authorization', 'cookie', 'host'];
 
@@ -131,7 +132,9 @@ export function createSafeFetch(opts: SafeFetchOptions = {}): SafeFetchClient {
         } catch {
             throw new DestinationBlockedError('bad_url', '');
         }
-        let method = (init.method ?? 'GET').toUpperCase();
+        // fetch-spec normalisation: only these six are upper-cased; others are sent as given.
+        const m = init.method ?? 'GET';
+        let method = NORMALISED_METHODS.has(m.toUpperCase()) ? m.toUpperCase() : m;
         let body = init.body;
         const headers = new Headers(init.headers as any);
         const mode = init.redirect ?? 'follow';

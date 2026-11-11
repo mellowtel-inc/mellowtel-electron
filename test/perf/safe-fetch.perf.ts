@@ -12,6 +12,8 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { writeFileSync } from 'fs';
+import { fork, type ChildProcess } from 'child_process';
+import { join } from 'path';
 import { createSafeFetch } from '../../src/net/safe-fetch';
 import { systemResolver, isBlockedAddress, type Resolver } from '../../src/net/destination-check';
 import { startHttp, testIsBlocked, type Fixture } from '../helpers/servers';
@@ -20,8 +22,17 @@ const env = (k: string, d: number) => (process.env[k] ? Number(process.env[k]) :
 const summary: Record<string, unknown> = { node: process.version, platform: process.platform, arch: process.arch };
 
 let h: Fixture;
-beforeAll(async () => { h = await startHttp({ record: false }); });
+// Out-of-process server for T4/T6 so CPU and latency measure the client only.
+let child: ChildProcess;
+let cport = 0;
+beforeAll(async () => {
+    h = await startHttp({ record: false });
+    // Plain `node` for the server even when the suite runs on Electron's runtime.
+    child = fork(join(__dirname, 'server-child.cjs'), [], { execPath: process.env.PERF_SERVER_NODE || 'node', stdio: 'ignore' });
+    cport = await new Promise<number>((r) => child.once('message', (m: any) => r(m.port)));
+});
 afterAll(async () => {
+    child?.disconnect();
     await h.close();
     if (process.env.PERF_OUT) writeFileSync(process.env.PERF_OUT, JSON.stringify(summary, null, 2));
     console.log('\nPERF SUMMARY\n' + JSON.stringify(summary, null, 2));
@@ -82,9 +93,9 @@ const gc = () => (global as any).gc?.();
 describe('1.2-T4 load: safeFetch vs plain fetch', () => {
     it('added latency within budget, zero errors', async () => {
         const N = env('LOAD_REQUESTS', 10000), C = env('LOAD_CONCURRENCY', 50);
-        const sf = newSafe();
-        const plain = (p: string) => fetch(`http://127.0.0.1:${h.port}${p}`);
-        const safe = (p: string) => sf.fetch(`http://public.test:${h.port}${p}`);
+        const sf = newSafe({ ports: [cport] });
+        const plain = (p: string) => fetch(`http://127.0.0.1:${cport}${p}`);
+        const safe = (p: string) => sf.fetch(`http://public.test:${cport}${p}`);
         // Warm-up both, then interleave two measured rounds to cancel drift.
         await measure(500, C, plain); await measure(500, C, safe);
         const rounds = [] as Array<{ plain: any; safe: any }>;
@@ -105,25 +116,44 @@ describe('1.2-T4 load: safeFetch vs plain fetch', () => {
 });
 
 describe('1.2-T6 CPU: safeFetch vs plain fetch', () => {
-    it('CPU per 1,000 requests within 10% of plain fetch', async () => {
-        const sf = newSafe();
-        const plain = (p: string) => fetch(`http://127.0.0.1:${h.port}${p}`);
-        const safe = (p: string) => sf.fetch(`http://public.test:${h.port}${p}`);
-        const cpuOf = async (f: (p: string) => Promise<any>) => {
+    it('client CPU per 1,000 requests within 10% of plain fetch', async () => {
+        const ROUNDS = env('CPU_ROUNDS', 15);
+        const sf = newSafe({ ports: [cport] });
+        const plain = (p: string) => fetch(`http://127.0.0.1:${cport}${p}`);
+        const safe = (p: string) => sf.fetch(`http://public.test:${cport}${p}`);
+        const cpuOf = async (f: (p: string) => Promise<any>, paths: (i: number) => string) => {
             const c0 = process.cpuUsage();
-            await runPool(1000, 10, async (i) => { const r = await f(pathFor(i)); await r.arrayBuffer(); });
+            await runPool(1000, 10, async (i) => { const r = await f(paths(i)); await r.arrayBuffer(); });
             const c = process.cpuUsage(c0);
             return (c.user + c.system) / 1000; // ms
         };
-        await cpuOf(plain); await cpuOf(safe); // warm-up
-        const p: number[] = [], s: number[] = [];
-        for (let r = 0; r < 7; r++) { p.push(await cpuOf(plain)); s.push(await cpuOf(safe)); }
-        // Note: this process also runs the fixture server; its CPU is the same in both arms.
-        const med = (xs: number[]) => pct(xs, 50);
-        const overhead = (med(s) - med(p)) / med(p);
-        summary['1.2-T6'] = { cpuMsPer1000: { plain: round(med(p)), safe: round(med(s)) }, overheadPct: round(overhead * 100, 1), rounds: 7, note: 'process CPU incl. in-process fixture server' };
+        const mixes: Record<string, (i: number) => string> = {
+            mixed: pathFor,                       // 80% direct, 20% redirect (the T4 workload)
+            direct: () => '/bytes?n=4096',
+            redirect: () => `/redirect?to=${encodeURIComponent('/bytes?n=4096')}`,
+        };
+        const out: Record<string, unknown> = {};
+        for (const [name, paths] of Object.entries(mixes)) {
+            await cpuOf(plain, paths); await cpuOf(safe, paths); // warm-up
+            const p: number[] = [], s: number[] = [], ratio: number[] = [];
+            for (let r = 0; r < ROUNDS; r++) {
+                // Alternate order each round so drift hits both arms equally.
+                let pv: number, sv: number;
+                if (r % 2 === 0) {
+                    pv = await cpuOf(plain, paths);
+                    sv = await cpuOf(safe, paths);
+                } else {
+                    sv = await cpuOf(safe, paths);
+                    pv = await cpuOf(plain, paths);
+                }
+                p.push(pv); s.push(sv); ratio.push(sv / pv);
+            }
+            out[name] = { plainMs: round(pct(p, 50)), safeMs: round(pct(s, 50)), overheadPct: round((pct(ratio, 50) - 1) * 100, 1), ratioP25: round(pct(ratio, 25), 3), ratioP75: round(pct(ratio, 75), 3) };
+        }
+        summary['1.2-T6'] = { rounds: ROUNDS, note: 'client process CPU only; server in a separate process; overhead = median of per-round safe/plain ratios', ...out };
         await sf.close();
-        expect(overhead).toBeLessThan(0.10);
+        // Budget applies to the realistic mix; direct/redirect are reported for diagnosis.
+        expect((out.mixed as any).overheadPct).toBeLessThan(10);
     });
 });
 

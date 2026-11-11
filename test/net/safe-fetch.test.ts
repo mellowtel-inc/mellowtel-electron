@@ -107,6 +107,19 @@ describe('1.2-T2 every redirect hop is checked again', () => {
         await c.close();
     });
 
+    it('redirect hops reuse the keep-alive connection (no new socket per hop)', async () => {
+        const c = client({ 'public.test': ['127.0.0.1'] });
+        const before = h.seen.length;
+        const res = await c.fetch(`http://public.test:${h.port}/chain/5`);
+        await res.text();
+        const ports = new Set(h.seen.slice(before).map((s) => s.remotePort));
+        expect(h.seen.length - before).toBe(6);
+        // Built-in fetch uses 2 sockets for this chain (measured on Node 20.10 and Electron 33);
+        // cancelling each redirect body instead would use 6.
+        expect(ports.size).toBeLessThanOrEqual(2);
+        await c.close();
+    });
+
     it('21 hops fail like fetch does', async () => {
         const c = client({ 'public.test': ['127.0.0.1'] });
         const err = await rejectionOf(c.fetch(`http://public.test:${h.port}/chain/21`));
