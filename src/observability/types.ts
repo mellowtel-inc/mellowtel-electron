@@ -8,6 +8,7 @@ export type JobErrorCode =
     | 'RATE_LIMIT'
     | 'NAVIGATION_FAILED'
     | 'FETCH_FAILED'
+    | 'EGRESS_BLOCKED'
     | 'PARSER_FETCH_FAILED'
     | 'SCRAPE_FAILED'
     | 'SCRAPE_TIMEOUT'
