@@ -1,4 +1,5 @@
 import { dialog, BrowserWindow } from 'electron';
+import { settingsText } from './consent-text';
 
 enum ContainerState {
     OPTED_IN = 'opted_in',
@@ -12,6 +13,8 @@ interface ConsentSettingsOptions {
     onOptOut: () => Promise<void>;
     nodeId: string;
     parentWindow?: BrowserWindow;
+    /** Show the wording for the proxy feature (consent version 2). */
+    proxy?: boolean;
 }
 
 export async function showConsentSettings({
@@ -19,12 +22,13 @@ export async function showConsentSettings({
     onOptIn,
     onOptOut,
     nodeId,
-    parentWindow
+    parentWindow,
+    proxy = false
 }: ConsentSettingsOptions): Promise<void> {
     let currentState: ContainerState = initiallyOptedIn ? ContainerState.OPTED_IN : ContainerState.OPTED_OUT;
 
     while (true) {
-        let messageText = getInformationText(currentState);
+        let messageText = getInformationText(currentState, proxy);
         let buttons: string[] = [];
         let defaultId: number = 0;
 
@@ -81,14 +85,6 @@ export async function showConsentSettings({
     }
 }
 
-function getInformationText(state: ContainerState): string {
-    switch (state) {
-        case ContainerState.OPTED_IN:
-            return "Mellowtel is an open-source library that lets you share your unused internet with companies that use it to access the web. The developer of this app gets a share of the revenue. It helps maintain this app free and available for everyone. Mellowtel shares your bandwidth only. Security and privacy are 100% guaranteed. It doesn't collect, share, or sell personal information (not even anonymized data)."
-        case ContainerState.OPTED_OUT:
-            return 'You are currently opted out. By opting in, Mellowtel lets you share your unused internet with companies that use it to access the web. The developer of this app gets a share of the revenue. It helps maintain this app free and available for everyone.\n\nMellowtel shares your bandwidth only. Security and privacy are 100% guaranteed. It doesn\'t collect, share, or sell personal information (not even anonymized data).';
-
-        case ContainerState.CONFIRM_OPT_OUT:
-            return 'Mellowtel is used by hundreds of thousands of users around the world. By remaining opted in, you will join this growing network of users. Security, privacy and speed of browsing are 100% guaranteed.\n\nOpting-out might negatively affect the quality of the service offered by this app. Please consider staying opted-in to keep your incentives available.';
-    }
+function getInformationText(state: ContainerState, proxy: boolean): string {
+    return settingsText(state as `${ContainerState}`, proxy);
 }
