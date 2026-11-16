@@ -9,6 +9,11 @@
  *
  * Off unless the app enables the proxy and the user accepted the consent
  * text that mentions it (see index.ts).
+ *
+ * Device impact is capped: at most `maxStreams` streams, a daily byte budget
+ * (counted on the device, kept across restarts), and the app can pause the
+ * tunnel (on battery, before sleep); a paused tunnel stays closed until every
+ * pause reason is cleared.
  */
 import { EventEmitter } from 'events';
 import net from 'net';
@@ -17,9 +22,18 @@ import { checkHostPort, DestinationBlockedError, type Resolver } from '../net/de
 import { CloseCode, decodeFrame, encodeFrame, encodeJson, FrameError, FrameType, PROTO_VERSION, SUBPROTOCOL } from './frames';
 import { Mux, type OpenErrCode } from './mux';
 
+export type PauseReason = 'battery' | 'sleep' | 'cap';
+
+export interface ByteBudgetStore {
+    load(): { day: string; bytes: number } | null;
+    save(v: { day: string; bytes: number }): void;
+}
+
 export interface TunnelClientOptions {
     url: string;
     deviceId: string;
+    /** The app's configuration key, sent in HELLO as `partner`. */
+    partner?: string;
     /** Per-device secret (32 random bytes, base64url), generated once and stored with the SDK settings. */
     secret: string;
     sdk: string;
@@ -34,13 +48,35 @@ export interface TunnelClientOptions {
     stableAfterMs?: number;
     /** Retry delay after the server said "not enabled" (4403). */
     notEnabledRetryMs?: number;
+    /** Bytes per local day carried for the proxy (both directions). Default 1 GiB. */
+    dailyByteCap?: number;
+    /** Where the day's byte count is kept between app restarts. Default: memory only. */
+    budget?: ByteBudgetStore;
+    /** After GOAWAY, longest wait for open streams to finish before reconnecting. Default 30 s. */
+    goawayMaxWaitMs?: number;
+    /** Test seams for the local day. */
+    today?: () => string;
+    msUntilNextDay?: () => number;
     log?: (msg: string, data?: Record<string, unknown>) => void;
     /** Test seams. Production uses the system resolver and net.connect. */
     resolver?: Resolver;
     connect?: (o: { host: string; port: number; family: number }) => net.Socket;
 }
 
-export type TunnelState = 'idle' | 'connecting' | 'open' | 'waiting' | 'stopped';
+export type TunnelState = 'idle' | 'connecting' | 'open' | 'waiting' | 'paused' | 'stopped';
+
+const BUDGET_SAVE_EVERY = 1024 * 1024;
+
+function localDay(): string {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function msUntilLocalMidnight(): number {
+    const d = new Date();
+    const next = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1, 0, 0, 1);
+    return next.getTime() - d.getTime();
+}
 
 /** Close codes after which reconnecting cannot help. */
 const FINAL_CODES = new Set<number>([CloseCode.BAD_TOKEN, CloseCode.REPLACED, CloseCode.VERSION]);
@@ -55,7 +91,12 @@ export class TunnelClient extends EventEmitter {
     private draining = false;
     private retryTimer: NodeJS.Timeout | null = null;
     private livenessTimer: NodeJS.Timeout | null = null;
-    private readonly o: Required<Omit<TunnelClientOptions, 'resolver' | 'connect' | 'log'>> & Pick<TunnelClientOptions, 'resolver' | 'connect' | 'log'>;
+    private dayTimer: NodeJS.Timeout | null = null;
+    private readonly pauses = new Set<PauseReason>();
+    private used: { day: string; bytes: number };
+    private lastSaved = 0;
+    private readonly o: Required<Omit<TunnelClientOptions, 'resolver' | 'connect' | 'log' | 'partner' | 'budget'>> &
+        Pick<TunnelClientOptions, 'resolver' | 'connect' | 'log' | 'partner' | 'budget'>;
 
     constructor(opts: TunnelClientOptions) {
         super();
@@ -68,13 +109,104 @@ export class TunnelClient extends EventEmitter {
             backoffMaxMs: 60000,
             stableAfterMs: 60000,
             notEnabledRetryMs: 60 * 60 * 1000,
+            dailyByteCap: 1024 * 1024 * 1024,
+            goawayMaxWaitMs: 30000,
+            today: localDay,
+            msUntilNextDay: msUntilLocalMidnight,
             ...opts,
         };
+        const stored = this.o.budget?.load();
+        const today = this.o.today();
+        this.used = stored && stored.day === today ? { day: today, bytes: stored.bytes } : { day: today, bytes: 0 };
+        this.lastSaved = this.used.bytes;
     }
 
     start(): void {
-        if (this.state === 'connecting' || this.state === 'open') return;
+        if (this.state === 'connecting' || this.state === 'open' || this.state === 'waiting') return;
+        if (this.state === 'paused') return;
+        this.rollDay();
+        if (this.used.bytes >= this.o.dailyByteCap) this.capReached();
+        if (this.pauses.size > 0) {
+            this.state = 'paused';
+            return;
+        }
         this.connect();
+    }
+
+    /** Closes the tunnel (DRAIN with the reason first) and keeps it closed until resume() clears every reason. */
+    pause(reason: PauseReason): void {
+        this.pauses.add(reason);
+        if (this.state === 'stopped' || this.state === 'paused') return;
+        const wasIdle = this.state === 'idle';
+        this.state = 'paused';
+        if (this.retryTimer) clearTimeout(this.retryTimer);
+        this.retryTimer = null;
+        this.saveBudget();
+        if (wasIdle) return;
+        const ws = this.ws;
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(encodeJson(FrameType.DRAIN, 0, { reason }));
+            this.mux?.closeAll('kill', true);
+            ws.close(CloseCode.NORMAL, reason);
+        } else {
+            ws?.terminate();
+        }
+        this.log('tunnel paused', { reason });
+    }
+
+    resume(reason: PauseReason): void {
+        this.pauses.delete(reason);
+        if (this.state !== 'paused' || this.pauses.size > 0) return;
+        this.state = 'idle';
+        this.log('tunnel resumed', { reason });
+        this.connect();
+    }
+
+    private rollDay(): void {
+        const today = this.o.today();
+        if (this.used.day !== today) {
+            this.used = { day: today, bytes: 0 };
+            this.lastSaved = 0;
+        }
+    }
+
+    private capReached(): void {
+        if (this.pauses.has('cap')) return;
+        this.pauses.add('cap');
+        if (this.dayTimer) clearTimeout(this.dayTimer);
+        const wait = () => {
+            this.dayTimer = setTimeout(() => {
+                this.dayTimer = null;
+                this.rollDay();
+                if (this.used.bytes >= this.o.dailyByteCap) return wait(); // clock not past midnight yet
+                this.saveBudget();
+                this.resume('cap');
+            }, Math.max(1000, this.o.msUntilNextDay()));
+            this.dayTimer.unref?.();
+        };
+        wait();
+    }
+
+    /** Counts proxied bytes (DATA payloads, both directions) against the day's budget. */
+    private count(n: number): void {
+        this.rollDay();
+        this.used.bytes += n;
+        if (this.used.bytes - this.lastSaved >= BUDGET_SAVE_EVERY) this.saveBudget();
+        if (this.used.bytes >= this.o.dailyByteCap && !this.pauses.has('cap')) {
+            this.capReached();
+            this.saveBudget();
+            // Not from inside a frame handler or a send callback.
+            setImmediate(() => {
+                this.pauses.delete('cap');
+                this.pause('cap');
+            });
+        }
+    }
+
+    private saveBudget(): void {
+        if (!this.o.budget) return;
+        this.o.budget.save({ day: this.used.day, bytes: this.used.bytes });
+        this.lastSaved = this.used.bytes;
     }
 
     /** Opt-out closes every stream and the tunnel at once; shutdown does the same without the opt-out signal. */
@@ -82,6 +214,7 @@ export class TunnelClient extends EventEmitter {
         const wasRunning = this.state !== 'stopped' && this.state !== 'idle';
         this.state = 'stopped';
         this.clearTimers();
+        this.saveBudget();
         const ws = this.ws;
         if (!ws || !wasRunning) return;
         if (ws.readyState === WebSocket.OPEN) {
@@ -107,8 +240,10 @@ export class TunnelClient extends EventEmitter {
     private clearTimers() {
         if (this.retryTimer) clearTimeout(this.retryTimer);
         if (this.livenessTimer) clearInterval(this.livenessTimer);
+        if (this.dayTimer) clearTimeout(this.dayTimer);
         this.retryTimer = null;
         this.livenessTimer = null;
+        this.dayTimer = null;
     }
 
     private connect(): void {
@@ -128,6 +263,7 @@ export class TunnelClient extends EventEmitter {
                 proto: PROTO_VERSION,
                 max_streams: this.o.maxStreams,
                 consent: this.o.consentVersion,
+                ...(this.o.partner ? { partner: this.o.partner } : {}),
             }));
             this.livenessTimer = setInterval(() => {
                 if (Date.now() - this.lastFrame > this.o.deadAfterMs) {
@@ -157,13 +293,21 @@ export class TunnelClient extends EventEmitter {
                 case FrameType.PONG:
                     return;
                 case FrameType.GOAWAY: {
-                    const after = Number(d.json?.reconnect_after_ms ?? 0);
-                    this.draining = true;
+                    const after = Math.max(0, Math.min(Number(d.json?.reconnect_after_ms ?? 0), 30000));
+                    this.draining = true; // no new streams on this tunnel
                     this.log('server asked to reconnect', { reason: d.json?.reason, after });
-                    setTimeout(() => ws.close(CloseCode.NORMAL, 'goaway'), Math.max(0, Math.min(after, 30000)));
+                    // Open streams finish first (up to goawayMaxWaitMs), then the tunnel closes and reconnects.
+                    const deadline = Date.now() + after + this.o.goawayMaxWaitMs;
+                    const tryClose = () => {
+                        if (ws.readyState !== WebSocket.OPEN) return;
+                        if ((this.mux?.size ?? 0) === 0 || Date.now() >= deadline) return ws.close(CloseCode.NORMAL, 'goaway');
+                        setTimeout(tryClose, 100);
+                    };
+                    setTimeout(tryClose, after);
                     return;
                 }
                 default:
+                    if (d.type === FrameType.DATA) this.count(d.payload.length);
                     if (d.type >= 1 && d.type <= 6) this.mux?.handle(d);
             }
         });
@@ -174,7 +318,7 @@ export class TunnelClient extends EventEmitter {
             this.mux?.closeAll('timeout');
             this.mux = null;
             if (this.ws === ws) this.ws = null;
-            if (this.state === 'stopped') return;
+            if (this.state === 'stopped' || this.state === 'paused') return;
             if (this.openedAt && Date.now() - this.openedAt >= this.o.stableAfterMs) this.attempts = 0;
             this.openedAt = 0;
             if (FINAL_CODES.has(code)) {
@@ -203,7 +347,11 @@ export class TunnelClient extends EventEmitter {
 
     private onHelloOk(ws: WebSocket, ok: Record<string, unknown>): void {
         const mux = new Mux(
-            (b) => { if (ws.readyState === WebSocket.OPEN) ws.send(b); },
+            (b) => {
+                if (ws.readyState !== WebSocket.OPEN) return;
+                if (b[0] === FrameType.DATA) this.count(b.length - 9);
+                ws.send(b);
+            },
             {
                 initialWindow: Number(ok.initial_window ?? 262144),
                 maxStreams: Math.min(this.o.maxStreams, Number(ok.max_streams ?? this.o.maxStreams)),
