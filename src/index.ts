@@ -10,11 +10,12 @@ import {
   getDailyRequestsHistory,
   getRequestCountsInRange
 } from "./storage/request-counter";
-import { BrowserWindow } from 'electron'
+import { BrowserWindow, powerMonitor } from 'electron'
 import { showConsentSettings } from "./consent/consent-setttings";
 import { showConsentDialog } from "./consent/consent-dialog";
 import { CONSENT_VERSION_PROXY, proxyConsentAction, type ProxyConsentAction } from "./consent/consent-text";
 import { TunnelClient } from "./proxy/tunnel-client";
+import { bindPower } from "./proxy/power";
 import { VERSION } from "./constants";
 import { randomBytes } from "crypto";
 import os from "os";
@@ -26,6 +27,7 @@ const OPT_IN_STATUS_KEY = "mellowtel_opt_in_status";
 const CONSENT_VERSION_KEY = "mellowtel_consent_version";
 const PROXY_SECRET_KEY = "mellowtel_proxy_secret";
 const PROXY_RECONSENT_ASKED_KEY = "mellowtel_proxy_reconsent_asked";
+const PROXY_BUDGET_KEY = "mellowtel_proxy_budget";
 
 interface MellowtelOptions {
   disableLogs: boolean
@@ -42,6 +44,11 @@ interface MellowtelOptions {
    * set to 2 only if that screen tells users websites will see their IP address.
    */
   consentVersion?: number
+  /**
+   * Most bytes per day this device carries for the proxy (both directions).
+   * Default 1 GiB. When reached, the tunnel pauses until local midnight.
+   */
+  proxyDailyByteCap?: number
 }
 
 export default class Mellowtel {
@@ -51,6 +58,7 @@ export default class Mellowtel {
   private disableLogs: boolean = true;
   private wsManager: WebSocketManager = WebSocketManager.getInstance();
   private tunnel: TunnelClient | null = null;
+  private unbindPower: () => void = () => undefined;
   private initialized = false;
 
   /**
@@ -119,14 +127,26 @@ export default class Mellowtel {
       sdk: VERSION,
       platform: `electron-${p === "darwin" ? "macos" : p === "win32" ? "windows" : "linux"}`,
       consentVersion: Math.max(Number(getLocalStorage(CONSENT_VERSION_KEY) ?? 0), Number(this.options?.consentVersion ?? 0)),
+      partner: this.configurationKey,
+      dailyByteCap: this.options?.proxyDailyByteCap,
+      budget: {
+        load: () => {
+          const v = getLocalStorage(PROXY_BUDGET_KEY);
+          return v && typeof v.day === "string" && typeof v.bytes === "number" ? { day: v.day, bytes: v.bytes } : null;
+        },
+        save: (v) => setLocalStorage(PROXY_BUDGET_KEY, v),
+      },
       log: (msg, data) => Logger.log(`[proxy] ${msg}`, data ?? ""),
     });
+    this.unbindPower = bindPower(powerMonitor as any, this.tunnel);
     this.tunnel.start();
   }
 
   private async stopProxy(reason: "optout" | "shutdown"): Promise<void> {
     const t = this.tunnel;
     this.tunnel = null;
+    this.unbindPower();
+    this.unbindPower = () => undefined;
     if (t) await t.stop(reason);
   }
 

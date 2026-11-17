@@ -173,6 +173,9 @@ await mellowtel.init();
 - Apps with their own consent screen (calling `optIn()` themselves) must pass `consentVersion: 2`, and only if their screen tells users that websites will see their IP address.
 - Only HTTPS (port 443) connections to public addresses are opened. Every destination is checked on the device after DNS; local-network, loopback and other private addresses are refused.
 - `optOut()` closes the tunnel and every open connection at once.
+- Device impact is limited: at most 8 connections at a time, and at most `proxyDailyByteCap` bytes a day (default 1 GiB, both directions; counted on the device and kept across restarts). When the day's limit is reached the tunnel pauses until local midnight.
+- The tunnel pauses while the computer runs on battery and before it sleeps, and comes back on mains power and after wake.
+- The tunnel only carries traffic once Mellowtel has enabled the device on its side; until then it stays idle and checks back hourly.
 
 # Contributing 🫶
 
