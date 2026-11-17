@@ -155,12 +155,49 @@ export class TunnelStream extends Duplex {
           // Let the reader drain what is buffered; the stream ends (and is forgotten) after that.
           this.push(null);
           if (this.readableLength === 0 && this.readableEnded) this.destroy();
+          else this.releaseWhenUnread();
         } else {
           this.destroy(new Error(`closed by peer: ${reason}`));
         }
         return;
       }
     }
+  }
+
+  /**
+   * After a normal CLOSE both directions are done; the slot is held only until a reader takes the bytes still
+   * buffered. A reader that went away first (a site socket that closed first, or a caller that hung up, unpipes
+   * itself) never reads the end, so the stream would hold its slot forever and the device would answer `busy`
+   * after `max_streams` such requests. Free it then: at once when nothing is buffered, else after 30 s unread.
+   */
+  private releaseWhenUnread(): void {
+    const reading = () => this.listenerCount('data') > 0 || this.listenerCount('readable') > 0;
+    if (this.readableLength === 0 && !reading()) {
+      this.destroy();
+      return;
+    }
+    let idle = 0;
+    let last = this.readableLength;
+    const t = setInterval(() => {
+      if (this.destroyed) return clearInterval(t);
+      if (reading()) {
+        idle = 0; // a reader drains it; the stream ends and closes on its own
+        return;
+      }
+      if (this.readableLength === 0) {
+        clearInterval(t);
+        this.destroy();
+        return;
+      }
+      idle = this.readableLength === last ? idle + 1 : 0;
+      last = this.readableLength;
+      if (idle >= 30) {
+        clearInterval(t);
+        this.destroy();
+      }
+    }, 1000);
+    t.unref?.();
+    this.once('close', () => clearInterval(t));
   }
 
   /** Counts the peer reported in its CLOSE (device → broker). */

@@ -150,3 +150,34 @@ describe('tunnel client (4.1)', () => {
         await until(() => srv.state.hellos.length === 2, 3000);
     });
 });
+
+describe('stream slots', () => {
+    // A site that closes first (Connection: close, idle timeout) must not leave the slot taken after the caller
+    // hangs up; otherwise the device answers busy to everything once max_streams such requests have happened.
+    for (const first of ['site', 'caller'] as const) {
+        it(`slots are freed after each request when the ${first} closes first`, async () => {
+            const site = net.createServer((s) => {
+                s.on('error', () => undefined);
+                s.once('data', () => {
+                    s.write('HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok');
+                    if (first === 'site') s.end();
+                });
+            });
+            await new Promise<void>((r) => site.listen(0, '127.0.0.1', () => r()));
+            cleanups.push(() => new Promise<void>((r) => site.close(() => r())));
+            const srv = await testServer();
+            cleanups.push(srv.close);
+            const { c } = client(srv.url, {}, (site.address() as net.AddressInfo).port);
+            c.start();
+            await until(() => srv.state.mux !== null);
+            for (let i = 0; i < 12; i++) {
+                const { stream, opened } = srv.state.mux!.openStream('example.com', 443);
+                await opened; // the 9th would be refused with busy if slots leaked
+                stream.write('GET / HTTP/1.1\r\nhost: example.com\r\n\r\n');
+                await new Promise<void>((r) => stream.once('data', () => r()));
+                stream.end(); // the caller hung up
+                await until(() => (c as unknown as { mux: { size: number } }).mux.size === 0, 2000);
+            }
+        });
+    }
+});
