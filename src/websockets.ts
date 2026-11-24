@@ -3,6 +3,7 @@ import { RateLimiter } from './local-rate-limiting/rate-limiter';
 import { Logger } from './logger/logger';
 import { MAX_DAILY_RATE, VERSION } from './constants';
 import { makeFetchRequest, processUrl, processHtmlContent } from './utils/data-helpers';
+import { fetchParserContent } from './utils/job-fetch';
 import { getCerealManager } from './utils/cereal-manager';
 import { getWindowPool } from './utils/window-pool';
 import { handleJarEvent, resumeJarWindow, shutdownJarWindow } from './utils/jar';
@@ -398,28 +399,7 @@ export class WebSocketManager {
         let fileNameBytes: string = "";
         if (dataRequest.parser_job) {
             trace?.mark('parser_fetch', `Parser fetch ${dataRequest.url}`);
-            try {
-                const response = await fetch(dataRequest.url);
-                const content = await response.text();
-                if (!response.ok) {
-                    throw new ObservedError(`[parser_fetch] HTTP ${response.status} for ${dataRequest.url}`, {
-                        code: 'PARSER_FETCH_FAILED',
-                        stage: 'parser_fetch',
-                        raw: { status: response.status, statusText: response.statusText, body: content },
-                    });
-                }
-                processedContent = { html: content, markdown: '' };
-            } catch (error) {
-                if (error instanceof ObservedError) {
-                    throw error;
-                }
-                throw new ObservedError(`[parser_fetch] Error fetching ${dataRequest.url} - ${error}`, {
-                    code: 'PARSER_FETCH_FAILED',
-                    stage: 'parser_fetch',
-                    raw: { url: dataRequest.url, error: String(error) },
-                    cause: error,
-                });
-            }
+            processedContent = await fetchParserContent(dataRequest.url);
         } else if (dataRequest.method_endpoint) {
             trace?.mark('fetch', `Fetch ${dataRequest.method} ${dataRequest.method_endpoint}`);
             const fetchResult = await makeFetchRequest(dataRequest);

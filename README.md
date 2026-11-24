@@ -155,6 +155,28 @@ console.log(`History:`, allCounts.dailyHistory);
 
 All request counts are stored locally using `electron-store` and persist across application restarts. Daily counts are stored separately for each date, allowing you to access historical data indefinitely.
 
+## 4. Proxy option (off by default)
+
+With `enableProxy`, a device can also carry web traffic for Mellowtel's customers through a secure tunnel that the device opens itself (nothing listens on the device). It is off unless your app turns it on, and it only runs for users who accepted the consent text that tells them websites will see their IP address.
+
+```js
+const mellowtel = new Mellowtel('IDENTIFIER', {
+    disableLogs: true,
+    enableProxy: true,
+    proxyServerUrl: 'wss://...', // provided by Mellowtel
+});
+await mellowtel.requestConsent(window, 'Get the app for free');
+await mellowtel.init();
+```
+
+- `requestConsent()` shows the proxy wording to new users. Users who opted in before are asked once; if they say no, everything else keeps working as before and the device never carries proxy traffic.
+- Apps with their own consent screen (calling `optIn()` themselves) must pass `consentVersion: 2`, and only if their screen tells users that websites will see their IP address.
+- Only HTTPS (port 443) connections to public addresses are opened. Every destination is checked on the device after DNS; local-network, loopback and other private addresses are refused.
+- `optOut()` closes the tunnel and every open connection at once.
+- Device impact is limited: at most 8 connections at a time, and at most `proxyDailyByteCap` bytes a day (default 1 GiB, both directions; counted on the device and kept across restarts). When the day's limit is reached the tunnel pauses until local midnight.
+- The tunnel pauses while the computer runs on battery and before it sleeps, and comes back on mains power and after wake.
+- The tunnel only carries traffic once Mellowtel has enabled the device on its side; until then it stays idle and checks back hourly.
+
 # Contributing 🫶
 
 Mellowtel is an open-source project, and contributions are welcome. If you want to contribute, you can create new features, fix bugs, or improve the infrastructure. Please refer to the [CONTRIBUTING.md](https://github.com/mellowtel-inc/mellowtel-js/blob/main/CONTRIBUTING.md) file in the repository for more information on how to contribute.

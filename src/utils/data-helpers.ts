@@ -1,7 +1,6 @@
 import { BrowserWindow } from 'electron';
 import { Logger } from '../logger/logger';
 import { ObservedError } from '../observability/observed-error';
-import { currentJobTrace } from '../observability/trace';
 import TurndownService from 'turndown';
 import { DataRequest } from './data-request';
 import { runActions } from './actions';
@@ -11,56 +10,8 @@ import { applyJobClient, buildStealthScript, releaseJobClient } from './client';
 import { attachMeucci, injectMeucciNow, collectAndSendCaptures, parseBurkeObject, type MeucciHandle, type MeucciConfig } from './meucci-helpers';
 import sharp from 'sharp';
 
-export async function makeFetchRequest(dataRequest: DataRequest): Promise<{ contentType: string | null, content: Buffer }> {
-    const { method_endpoint, method, method_payload, method_headers } = dataRequest;
-
-    const options: RequestInit = {
-        method: method,
-        headers: method_headers
-    };
-
-    if (method_payload && method_payload !== 'no_payload') {
-        options.body = method_payload;
-    }
-
-    try {
-        const response = await fetch(method_endpoint, options);
-        const contentType = response.headers.get('content-type');
-        const content = await response.arrayBuffer();
-        currentJobTrace()?.add('info', `[makeFetchRequest] ${response.status} ${method_endpoint}`, {
-            status: response.status,
-            statusText: response.statusText,
-            contentType,
-            bytes: content.byteLength,
-        });
-        if (!response.ok) {
-            const bodyPreview = Buffer.from(content).toString('utf-8').slice(0, 2000);
-            throw new ObservedError(`[makeFetchRequest] HTTP ${response.status} for ${method_endpoint}`, {
-                code: 'FETCH_FAILED',
-                stage: 'fetch',
-                raw: {
-                    method,
-                    method_endpoint,
-                    status: response.status,
-                    statusText: response.statusText,
-                    body: bodyPreview,
-                },
-            });
-        }
-        return { contentType, content: Buffer.from(content) };
-    } catch (error) {
-        Logger.error(`[makeFetchRequest]: Error fetching ${method_endpoint} - ${error}`);
-        if (error instanceof ObservedError) {
-            throw error;
-        }
-        throw new ObservedError(`[makeFetchRequest]: Error fetching ${method_endpoint} - ${error}`, {
-            code: 'FETCH_FAILED',
-            stage: 'fetch',
-            raw: { method, method_endpoint, error: String(error) },
-            cause: error,
-        });
-    }
-}
+// Moved to job-fetch.ts (destination check); re-exported so existing imports keep working.
+export { makeFetchRequest } from './job-fetch';
 
 const delay = (ms: number): Promise<void> => {
     return new Promise(resolve => setTimeout(resolve, ms));
