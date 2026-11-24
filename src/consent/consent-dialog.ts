@@ -1,4 +1,5 @@
 import { dialog, BrowserWindow } from 'electron';
+import { consentDialogText } from './consent-text';
 
 interface ConsentDialogOptions {
     incentive: string;
@@ -7,6 +8,8 @@ interface ConsentDialogOptions {
     appIconPath?: string;
     dialogTextOverride?: string;
     parentWindow?: BrowserWindow;
+    /** Show the wording for the proxy feature (consent version 2). */
+    proxy?: boolean;
 }
 
 export async function showConsentDialog({
@@ -14,12 +17,11 @@ export async function showConsentDialog({
     acceptButtonText = 'Yes',
     declineButtonText = 'No',
     dialogTextOverride,
-    parentWindow
+    parentWindow,
+    proxy = false
 }: ConsentDialogOptions): Promise<boolean> {
     // Construct the message text
-    const defaultMessage = `If you click on "Yes", Mellowtel will let you share unused bandwidth with trusted companies who use it to access the internet. A portion of the generated revenue is allocated to this app to maintain its free availability.\n\n` +
-        'It shares internet bandwidth only. No personal information is collected.\n\n' +
-        'You can opt out at any moment from the settings page.';
+    const defaultMessage = consentDialogText(proxy);
 
     const messageText = dialogTextOverride || defaultMessage;
     

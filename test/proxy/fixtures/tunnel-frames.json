@@ -1,0 +1,279 @@
+{
+  "spec": "docs/tunnel-protocol.md",
+  "version": 1,
+  "note": "One frame per binary WebSocket message. Header: type u8, stream_id u32 BE, length u32 BE, then payload. JSON payloads are UTF-8; encoders emit them without whitespace, decoders accept any valid JSON and ignore unknown fields.",
+  "valid": [
+    {
+      "name": "HELLO",
+      "note": "device → broker, first frame",
+      "type": 9,
+      "stream_id": 0,
+      "payload": {
+        "json": {
+          "device_id": "mllwtl_example_device1",
+          "token": "tok.example",
+          "sdk": "700.0.40",
+          "platform": "electron-macos",
+          "proto": 1,
+          "max_streams": 8
+        }
+      },
+      "hex": "0900000000000000837b226465766963655f6964223a226d6c6c77746c5f6578616d706c655f64657669636531222c22746f6b656e223a22746f6b2e6578616d706c65222c2273646b223a223730302e302e3430222c22706c6174666f726d223a22656c656374726f6e2d6d61636f73222c2270726f746f223a312c226d61785f73747265616d73223a387d"
+    },
+    {
+      "name": "HELLO_OK",
+      "note": "broker → device",
+      "type": 11,
+      "stream_id": 0,
+      "payload": {
+        "json": {
+          "tunnel_id": "t-01",
+          "max_streams": 8,
+          "initial_window": 262144,
+          "ping_interval_s": 20
+        }
+      },
+      "hex": "0b00000000000000517b2274756e6e656c5f6964223a22742d3031222c226d61785f73747265616d73223a382c22696e697469616c5f77696e646f77223a3236323134342c2270696e675f696e74657276616c5f73223a32307d"
+    },
+    {
+      "name": "OPEN",
+      "note": "broker → device",
+      "type": 1,
+      "stream_id": 1,
+      "payload": {
+        "json": {
+          "host": "chatgpt.com",
+          "port": 443
+        }
+      },
+      "hex": "0100000001000000217b22686f7374223a22636861746770742e636f6d222c22706f7274223a3434337d"
+    },
+    {
+      "name": "OPEN",
+      "note": "largest stream id; IPv6 literal",
+      "type": 1,
+      "stream_id": 4294967295,
+      "payload": {
+        "json": {
+          "host": "2606:4700::6810:85e5",
+          "port": 443
+        }
+      },
+      "hex": "01ffffffff0000002a7b22686f7374223a22323630363a343730303a3a363831303a38356535222c22706f7274223a3434337d"
+    },
+    {
+      "name": "OPEN_OK",
+      "note": "device → broker",
+      "type": 2,
+      "stream_id": 1,
+      "payload": {
+        "json": {}
+      },
+      "hex": "0200000001000000027b7d"
+    },
+    {
+      "name": "OPEN_ERR",
+      "note": "device → broker",
+      "type": 3,
+      "stream_id": 3,
+      "payload": {
+        "json": {
+          "code": "target_blocked"
+        }
+      },
+      "hex": "0300000003000000197b22636f6465223a227461726765745f626c6f636b6564227d"
+    },
+    {
+      "name": "OPEN_ERR",
+      "note": "device → broker",
+      "type": 3,
+      "stream_id": 5,
+      "payload": {
+        "json": {
+          "code": "dns_failed"
+        }
+      },
+      "hex": "0300000005000000157b22636f6465223a22646e735f6661696c6564227d"
+    },
+    {
+      "name": "DATA",
+      "note": "raw bytes (start of a TLS record)",
+      "type": 4,
+      "stream_id": 1,
+      "payload": {
+        "hex": "160303"
+      },
+      "hex": "040000000100000003160303"
+    },
+    {
+      "name": "DATA",
+      "note": "empty DATA is allowed and ignored",
+      "type": 4,
+      "stream_id": 1,
+      "payload": {
+        "hex": ""
+      },
+      "hex": "040000000100000000"
+    },
+    {
+      "name": "WINDOW",
+      "note": "credit is a binary u32, not JSON",
+      "type": 5,
+      "stream_id": 1,
+      "payload": {
+        "hex": "00010000"
+      },
+      "hex": "05000000010000000400010000"
+    },
+    {
+      "name": "CLOSE",
+      "note": "broker → device",
+      "type": 6,
+      "stream_id": 1,
+      "payload": {
+        "json": {
+          "reason": "normal"
+        }
+      },
+      "hex": "0600000001000000137b22726561736f6e223a226e6f726d616c227d"
+    },
+    {
+      "name": "CLOSE",
+      "note": "device → broker, with the device byte counts",
+      "type": 6,
+      "stream_id": 1,
+      "payload": {
+        "json": {
+          "reason": "normal",
+          "rx": 5242880,
+          "tx": 1048576
+        }
+      },
+      "hex": "06000000010000002d7b22726561736f6e223a226e6f726d616c222c227278223a353234323838302c227478223a313034383537367d"
+    },
+    {
+      "name": "PING",
+      "note": "8 opaque bytes",
+      "type": 7,
+      "stream_id": 0,
+      "payload": {
+        "hex": "0000000000000001"
+      },
+      "hex": "0700000000000000080000000000000001"
+    },
+    {
+      "name": "PONG",
+      "note": "echoes the PING bytes",
+      "type": 8,
+      "stream_id": 0,
+      "payload": {
+        "hex": "0000000000000001"
+      },
+      "hex": "0800000000000000080000000000000001"
+    },
+    {
+      "name": "DRAIN",
+      "note": "device → broker",
+      "type": 10,
+      "stream_id": 0,
+      "payload": {
+        "json": {
+          "reason": "battery"
+        }
+      },
+      "hex": "0a00000000000000147b22726561736f6e223a2262617474657279227d"
+    },
+    {
+      "name": "GOAWAY",
+      "note": "broker → device",
+      "type": 12,
+      "stream_id": 0,
+      "payload": {
+        "json": {
+          "reason": "deploy",
+          "reconnect_after_ms": 2000
+        }
+      },
+      "hex": "0c000000000000002d7b22726561736f6e223a226465706c6f79222c227265636f6e6e6563745f61667465725f6d73223a323030307d"
+    }
+  ],
+  "invalid": [
+    {
+      "name": "short header",
+      "error": "frame_too_short",
+      "hex_prefix": "0100000001000000",
+      "length": 8,
+      "hex": "0100000001000000"
+    },
+    {
+      "name": "length mismatch",
+      "error": "length_mismatch",
+      "hex_prefix": "040000000100000001aabb",
+      "length": 11,
+      "hex": "040000000100000001aabb"
+    },
+    {
+      "name": "payload over 65536",
+      "error": "frame_too_large",
+      "hex_prefix": "0400000001000100010000000000000000000000000000000000000000000000",
+      "length": 65546,
+      "build": "header 04 00000001 00010001 followed by 65537 zero bytes"
+    },
+    {
+      "name": "stream frame on stream 0",
+      "error": "bad_stream_id",
+      "hex_prefix": "0100000000000000217b22686f7374223a22636861746770742e636f6d222c22",
+      "length": 42,
+      "hex": "0100000000000000217b22686f7374223a22636861746770742e636f6d222c22706f7274223a3434337d"
+    },
+    {
+      "name": "tunnel frame on a stream",
+      "error": "bad_stream_id",
+      "hex_prefix": "0700000007000000080000000000000000",
+      "length": 17,
+      "hex": "0700000007000000080000000000000000"
+    },
+    {
+      "name": "WINDOW with 3 bytes",
+      "error": "bad_payload",
+      "hex_prefix": "050000000100000003000100",
+      "length": 12,
+      "hex": "050000000100000003000100"
+    },
+    {
+      "name": "WINDOW credit 0",
+      "error": "bad_payload",
+      "hex_prefix": "05000000010000000400000000",
+      "length": 13,
+      "hex": "05000000010000000400000000"
+    },
+    {
+      "name": "PING with 4 bytes",
+      "error": "bad_payload",
+      "hex_prefix": "07000000000000000400000000",
+      "length": 13,
+      "hex": "07000000000000000400000000"
+    },
+    {
+      "name": "OPEN payload not JSON",
+      "error": "bad_payload",
+      "hex_prefix": "0100000001000000067b686f73743a",
+      "length": 15,
+      "hex": "0100000001000000067b686f73743a"
+    },
+    {
+      "name": "OPEN without port",
+      "error": "bad_payload",
+      "hex_prefix": "0100000001000000167b22686f7374223a22636861746770742e636f6d227d",
+      "length": 31,
+      "hex": "0100000001000000167b22686f7374223a22636861746770742e636f6d227d"
+    }
+  ],
+  "ignored": [
+    {
+      "name": "unknown type 200 on stream 0",
+      "result": "ignored (forward compatibility)",
+      "hex": "c80000000000000001ff"
+    }
+  ]
+}
