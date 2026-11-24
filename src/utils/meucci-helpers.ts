@@ -1,5 +1,6 @@
 import type { BrowserWindow } from 'electron';
 import { Logger } from '../logger/logger';
+import { gzipBody } from './gzip-body';
 
 /**
  * Captures `fetch`, `XMLHttpRequest`, and `WebSocket` traffic made by a
@@ -1204,11 +1205,12 @@ export async function collectAndSendCaptures(
                 `${SINK_REQUEST_LIMIT_BYTES}-byte request cap; sending anyway, expect a rejection`
             );
         }
+        const encoded = await gzipBody(body, 'application/json');
         try {
             const response = await fetch(config.api_endpoint, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body,
+                headers: encoded.headers,
+                body: encoded.body,
             });
             if (!response.ok) {
                 Logger.error(

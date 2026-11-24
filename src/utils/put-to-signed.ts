@@ -1,6 +1,7 @@
 import { Logger } from "../logger/logger";
 import { ObservedError } from "../observability/observed-error";
 import { DataRequest } from "./data-request";
+import { gzipBody } from "./gzip-body";
 import { getIdentifier } from "./identity-helpers";
 
 
@@ -124,10 +125,11 @@ export async function saveCrawl(
     }
   }
 
+  const encoded = await gzipBody(JSON.stringify(bodyData), "text/plain");
   const requestOptions = {
     method: "POST",
-    headers: { "Content-Type": "text/plain" },
-    body: JSON.stringify(bodyData),
+    headers: encoded.headers,
+    body: encoded.body,
   };
 
   Logger.log("Sending data to server:", bodyData);
