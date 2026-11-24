@@ -1,6 +1,6 @@
 import type { BrowserWindow } from 'electron';
 import { Logger } from '../logger/logger';
-import { gzipBody } from './gzip-body';
+import { describeEncoding, gzipBody } from './gzip-body';
 
 /**
  * Captures `fetch`, `XMLHttpRequest`, and `WebSocket` traffic made by a
@@ -41,6 +41,8 @@ export interface MeucciConfig {
     include_urls: string[];
     exclude_urls: string[];
     max_capture_bytes: number;
+    /** The job's `gzipResponse` flag. Gzip capture bodies of 1 KiB or more. */
+    gzip_response: boolean;
 }
 
 export interface MeucciHandle {
@@ -125,9 +127,14 @@ export function globMatches(url: string, patterns: string[]): boolean {
 /**
  * Parses a job's `burkeObject` field into a MeucciConfig, or null when
  * capture wasn't requested (absent/empty/invalid) or is missing the one
- * required field (`endpoint`).
+ * required field (`endpoint`). `gzipResponse` is the job-level flag, not a
+ * burkeObject field, so the job controls both sinks with one switch.
  */
-export function parseBurkeObject(raw: string | undefined, recordID: string): MeucciConfig | null {
+export function parseBurkeObject(
+    raw: string | undefined,
+    recordID: string,
+    gzipResponse: boolean = false,
+): MeucciConfig | null {
     if (!raw || raw === '{}' || raw === 'null') {
         return null;
     }
@@ -162,7 +169,8 @@ export function parseBurkeObject(raw: string | undefined, recordID: string): Meu
 
     Logger.log(
         `[Meucci] enabled for ${recordID} -> ${endpoint} ` +
-        `include=${JSON.stringify(include)} exclude=${JSON.stringify(exclude)} maxBytes=${maxBytes}`
+        `include=${JSON.stringify(include)} exclude=${JSON.stringify(exclude)} maxBytes=${maxBytes} ` +
+        `gzip=${gzipResponse}`
     );
 
     return {
@@ -171,6 +179,7 @@ export function parseBurkeObject(raw: string | undefined, recordID: string): Meu
         include_urls: include,
         exclude_urls: exclude,
         max_capture_bytes: maxBytes,
+        gzip_response: gzipResponse,
     };
 }
 
@@ -1205,7 +1214,7 @@ export async function collectAndSendCaptures(
                 `${SINK_REQUEST_LIMIT_BYTES}-byte request cap; sending anyway, expect a rejection`
             );
         }
-        const encoded = await gzipBody(body, 'application/json');
+        const encoded = await gzipBody(body, 'application/json', config.gzip_response);
         try {
             const response = await fetch(config.api_endpoint, {
                 method: 'POST',
@@ -1219,7 +1228,10 @@ export async function collectAndSendCaptures(
                 );
             } else {
                 sent++;
-                Logger.log(`[Meucci] sent capture ${capture?.id} (${body.length} bytes) -> ${response.status}`);
+                Logger.log(
+                    `[Meucci] sent capture ${capture?.id} (${describeEncoding(encoded, config.gzip_response)}) ` +
+                    `-> ${response.status}`
+                );
             }
         } catch (e) {
             Logger.error(`[Meucci] failed to send capture ${capture?.id} for ${config.burke_id}: ${e}`);

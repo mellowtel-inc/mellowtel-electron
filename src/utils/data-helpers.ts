@@ -111,7 +111,7 @@ export async function processHtmlContent(htmlString: string, dataRequest: DataRe
             }, timeoutMs);
         });
 
-        const meucciConfig = parseBurkeObject(dataRequest.burkeObject, dataRequest.recordID);
+        const meucciConfig = parseBurkeObject(dataRequest.burkeObject, dataRequest.recordID, dataRequest.gzipResponse);
         let meucciHandle: MeucciHandle | null = null;
 
         // Race between the actual processing and the timeout
@@ -312,7 +312,7 @@ async function processUrlWithWindow(win: BrowserWindow, dataRequest: DataRequest
         });
 
         const client = applyJobClient(win, dataRequest.client);
-        const meucciConfig = parseBurkeObject(dataRequest.burkeObject, dataRequest.recordID);
+        const meucciConfig = parseBurkeObject(dataRequest.burkeObject, dataRequest.recordID, dataRequest.gzipResponse);
         let meucciHandle: MeucciHandle | null = null;
 
         // Race between the actual processing and the timeout

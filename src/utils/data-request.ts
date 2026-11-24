@@ -134,6 +134,10 @@ interface DataRequestParams {
      *  endpoint plus include/exclude URL glob filters. See parseBurkeObject
      *  in meucci-helpers.ts. Absent or "{}" means capture is off. */
     burkeObject?: string;
+    /** Opt-in. When true, result bodies of 1 KiB or more are POSTed gzipped
+     *  with `Content-Encoding: gzip`. Only set this for jobs whose receiving
+     *  endpoint unpacks gzip. Default false: bodies are sent plain. */
+    gzipResponse?: boolean;
 }
 
 export class DataRequest {
@@ -197,6 +201,8 @@ export class DataRequest {
     actionResults: ActionResult[];
     finalUrl?: string;
     burkeObject?: string;
+    /** See DataRequestParams.gzipResponse. */
+    gzipResponse: boolean;
 
     constructor({
         url,
@@ -256,7 +262,8 @@ export class DataRequest {
         visible = false,
         offscreen = true,
         typing,
-        burkeObject
+        burkeObject,
+        gzipResponse = false
     }: DataRequestParams) {
         this.url = url;
         this.orgId = orgId;
@@ -317,6 +324,7 @@ export class DataRequest {
         this.typing = typing ?? parseTypingConfig(undefined, this.natural);
         this.actionResults = [];
         this.burkeObject = burkeObject;
+        this.gzipResponse = gzipResponse === true;
     }
 
     // Helper function to parse size strings
@@ -394,6 +402,7 @@ export class DataRequest {
             offscreen: parseOptionalBool(json.offscreen),
             typing: parseTypingConfig(json.typing, parseNaturalInput(json.input)),
             burkeObject: json.burkeObject,
+            gzipResponse: parseOptionalBool(json.gzipResponse) ?? false,
         };
         return new DataRequest(params);
     }
