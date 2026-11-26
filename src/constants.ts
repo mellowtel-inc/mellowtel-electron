@@ -23,6 +23,6 @@ export const SPEED_TEST_MAX_BYTES: number = 10 * 1024 * 1024; // hard ceiling ac
 export const SPEED_TEST_MAX_DURATION_MS: number = 5000; // measurement window after warmup
 export const SPEED_TEST_TIMEOUT_MS: number = 10000; // absolute wall clock
 export const SPEED_TEST_WARMUP_MS: number = 500; // discarded, excludes TCP slow start
-export const SPEED_TEST_CACHE_TTL_MS: number = 60 * 60 * 1000; // 1 hour
+export const SPEED_TEST_CACHE_TTL_MS: number = 60 * 60 * 1000; // re-measure after 1 hour; older readings are still sent
 export const SPEED_TEST_MAX_PER_DAY: number = 6;
 export const SPEED_TEST_FALLBACK: number = 0;

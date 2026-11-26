@@ -112,12 +112,15 @@ let activeCancel: (() => void) | null = null;
 
 /**
  * Reads the last measured speed. Synchronous and safe to call on the connect
- * path: a miss, a stale entry or a corrupt entry all return the fallback.
+ * path. The reading is returned however old it is: the server picks the pool
+ * from this value once per socket, and a device's last measurement is a far
+ * better estimate than the fallback. Age only decides when to re-measure (see
+ * refreshSpeedInBackground). A miss or a corrupt entry returns the fallback.
  */
 export function getCachedSpeed(): number {
   try {
     const cache = readCache();
-    return isCacheFresh(cache) ? cache.mbps : SPEED_TEST_FALLBACK;
+    return cache ? cache.mbps : SPEED_TEST_FALLBACK;
   } catch {
     return SPEED_TEST_FALLBACK;
   }
