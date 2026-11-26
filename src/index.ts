@@ -17,7 +17,6 @@ import { CONSENT_VERSION_PROXY, proxyConsentAction, type ProxyConsentAction } fr
 import { TunnelClient } from "./proxy/tunnel-client";
 import { bindPower } from "./proxy/power";
 import { VERSION } from "./constants";
-import { setJobPortRule } from "./net/safe-fetch";
 import { randomBytes } from "crypto";
 import os from "os";
 
@@ -70,8 +69,6 @@ export default class Mellowtel {
   constructor(configurationKey: string, options?: MellowtelOptions) {
     this.configurationKey = configurationKey;
     this.options = options;
-    // Job fetches keep the 80/443 port rule only in proxy mode; otherwise any port, as before.
-    setJobPortRule(options?.enableProxy === true);
     this.disableLogs = options?.disableLogs !== undefined ? options.disableLogs : true;
     Logger.disableLogs = this.disableLogs;
     this.nodeId = getOrGenerateIdentifier(configurationKey);

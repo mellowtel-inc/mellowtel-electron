@@ -17,7 +17,7 @@ Modes and allowed ports:
 
 | Mode | Ports | Used by |
 |---|---|---|
-| `fetch` | 80, 443 when proxy mode is on; any port when it is off | `parser_job`, `method_endpoint` |
+| `fetch` | 80, 443 | `parser_job`, `method_endpoint` |
 | `tls` | 443 | callers that only need HTTPS (not used by the job paths) |
 
 Blocked: `0/8`, `10/8`, `100.64/10`, `127/8`, `169.254/16`, `172.16/12`, `192.0.0/24`, `192.0.2/24`,
@@ -42,10 +42,6 @@ before connecting, or DNS rebinding can swap in a private address.
   `Cookie` dropped cross-origin).
 - Policy refusals throw `DestinationBlockedError` (`isEgressBlocked(err)` is true). DNS failures
   and other network errors throw `TypeError('fetch failed')` with the original cause, like `fetch`.
-
-The 80/443 rule for job fetches applies only when the host app sets `enableProxy: true`
-(`setJobPortRule`, called from the `Mellowtel` constructor). With proxy mode off, jobs may use any
-port, as in 700.0.36. Private addresses and `localhost` are refused in both cases.
 
 `createSafeFetch({...})` takes test-only seams (resolver, address rule, ports, CA). Production code
 uses `safeFetch`, which always applies the real rules.
