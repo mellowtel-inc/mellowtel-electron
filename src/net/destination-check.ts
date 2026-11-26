@@ -9,7 +9,8 @@
  * - IP literals are normalised with the WHATWG URL host parser first, so
  *   decimal (2130706433), hex (0x7f000001), octal (0177.0.0.1) and short
  *   (127.1) forms are caught, plus IPv4 embedded in IPv6 (mapped, NAT64, 6to4).
- * - The port must be on the mode's allow-list.
+ * - The port must be on the mode's allow-list (callers may pass 'any' to skip
+ *   the port rule; the address rules still apply).
  * - The caller must connect to `address` (the one that was checked), never
  *   re-resolve the name. See safe-fetch.ts for how fetch does that.
  *
@@ -72,6 +73,9 @@ export const systemResolver: Resolver = async (host) => {
     return res.map((r) => ({ address: r.address, family: r.family }));
 };
 
+/** Allowed ports, or 'any' to allow every valid port (address rules still apply). */
+export type PortRule = readonly number[] | 'any';
+
 export interface CheckOptions {
     mode: EgressMode;
     resolver?: Resolver;
@@ -83,7 +87,7 @@ export interface CheckOptions {
  * address rule for resolved (non-literal) hosts.
  */
 export interface PolicyOverrides {
-    ports?: readonly number[];
+    ports?: PortRule;
     isBlocked?: (ip: string) => boolean;
 }
 
@@ -241,7 +245,7 @@ function stripBrackets(h: string): string {
     return h.startsWith('[') && h.endsWith(']') ? h.slice(1, -1) : h;
 }
 
-function parseUrlTarget(input: string | URL, mode: EgressMode, ports?: readonly number[]): ParsedTarget {
+function parseUrlTarget(input: string | URL, mode: EgressMode, ports?: PortRule): ParsedTarget {
     let url: URL;
     try {
         url = typeof input === 'string' ? new URL(input) : new URL(input.href);
@@ -256,9 +260,10 @@ function parseUrlTarget(input: string | URL, mode: EgressMode, ports?: readonly 
     return finishTarget(host, port, mode, ports);
 }
 
-function finishTarget(host: string, port: number, mode: EgressMode, ports?: readonly number[]): ParsedTarget {
+function finishTarget(host: string, port: number, mode: EgressMode, ports?: PortRule): ParsedTarget {
     if (!host) throw new DestinationBlockedError('bad_url', '');
-    if (!(ports ?? ALLOWED_PORTS[mode]).includes(port)) {
+    const allowed = ports === 'any' ? port >= 1 && port <= 65535 : (ports ?? ALLOWED_PORTS[mode]).includes(port);
+    if (!allowed) {
         throw new DestinationBlockedError('blocked_port', host, `port ${port}`);
     }
     if (isLocalhostName(host)) throw new DestinationBlockedError('blocked_host', host);

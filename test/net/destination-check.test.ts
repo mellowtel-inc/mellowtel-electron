@@ -3,6 +3,7 @@ import {
     checkDestination,
     checkHostPort,
     isBlockedAddress,
+    precheckUrl,
     DestinationBlockedError,
     type Resolver,
 } from '../../src/net/destination-check';
@@ -111,6 +112,22 @@ describe('1.1-T5 port allow-list per mode', () => {
         await expectBlocked(checkDestination('http://example.com:8080/', { mode: 'fetch', resolver: mustNotResolve }), 'blocked_port');
         await expect(checkDestination('http://example.com/', { mode: 'fetch', resolver: resolveTo('93.184.215.14') })).resolves.toMatchObject({ port: 80 });
         await expect(checkDestination('https://example.com:443/', { mode: 'fetch', resolver: resolveTo('93.184.215.14') })).resolves.toMatchObject({ port: 443 });
+    });
+    it("ports 'any' allows any valid port but keeps the address rules", () => {
+        expect(precheckUrl('https://example.com:8443/', 'fetch', { ports: 'any' })).toMatchObject({ port: 8443 });
+        expect(precheckUrl('http://example.com:8080/', 'fetch', { ports: 'any' })).toMatchObject({ port: 8080 });
+        for (const [u, reason] of [
+            ['http://example.com:0/', 'blocked_port'],
+            ['http://localhost:8080/', 'blocked_host'],
+            ['http://10.0.0.1:8443/', 'blocked_address'],
+            ['http://[::1]:3000/', 'blocked_address'],
+            ['ftp://example.com:21/', 'bad_scheme'],
+        ] as const) {
+            let err: any;
+            try { precheckUrl(u, 'fetch', { ports: 'any' }); } catch (e) { err = e; }
+            expect(err, u).toBeInstanceOf(DestinationBlockedError);
+            expect(err.reason, u).toBe(reason);
+        }
     });
     it('fetch mode refuses non-http schemes', async () => {
         for (const u of ['file:///etc/passwd', 'ftp://example.com/', 'data:text/plain,hi', 'ws://example.com/']) {
