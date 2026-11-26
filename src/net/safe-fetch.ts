@@ -3,6 +3,9 @@
  * private destinations.
  *
  * - Before each hop: precheckUrl (scheme, port, localhost, IP literals).
+ * - Port rule (80/443 only) applies only when the host app turned on proxy
+ *   mode (setJobPortRule). Otherwise any port is allowed, as before 700.0.37.
+ *   Private destinations are refused either way.
  * - Host names are resolved inside the connection's own lookup, and every
  *   address is checked there. The socket connects to an address from that
  *   same answer, so there is no gap between check and connect for DNS
@@ -26,6 +29,7 @@ import {
     precheckUrl,
     resolveAndCheck,
     systemResolver,
+    type PortRule,
     type Resolver,
 } from './destination-check';
 
@@ -36,13 +40,24 @@ export interface SafeFetchOptions {
     maxRedirects?: number;
     /** Test seams only; production uses the defaults. */
     isBlocked?: (ip: string) => boolean;
-    ports?: readonly number[];
+    ports?: PortRule;
     connect?: { ca?: string | string[]; timeout?: number };
 }
 
 export interface SafeFetchClient {
     fetch: (input: string | URL, init?: SafeFetchInit) => Promise<Response>;
     close: () => Promise<void>;
+}
+
+let jobPortRule = false;
+
+/**
+ * Turns the 80/443 port rule for job fetches on or off. The SDK turns it on
+ * only when the host app sets enableProxy: true; with proxy mode off, job
+ * fetches may use any port, exactly as before 700.0.37.
+ */
+export function setJobPortRule(on: boolean): void {
+    jobPortRule = on;
 }
 
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
@@ -140,7 +155,7 @@ export function createSafeFetch(opts: SafeFetchOptions = {}): SafeFetchClient {
         const mode = init.redirect ?? 'follow';
 
         for (let hop = 0; ; hop++) {
-            precheckUrl(url, 'fetch', { ports: opts.ports });
+            precheckUrl(url, 'fetch', { ports: opts.ports ?? (jobPortRule ? undefined : 'any') });
             let res: Response;
             try {
                 res = await undiciFetch(url, { ...init, method, body, headers, redirect: 'manual', dispatcher: agent });

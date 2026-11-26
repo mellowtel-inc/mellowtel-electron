@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { createSafeFetch, safeFetch, isEgressBlocked } from '../../src/net/safe-fetch';
+import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { createSafeFetch, safeFetch, isEgressBlocked, setJobPortRule } from '../../src/net/safe-fetch';
 import { DestinationBlockedError } from '../../src/net/destination-check';
 import { startHttp, startHttps, makeCert, haveOpenssl, testIsBlocked, mapResolver, type Fixture, type TlsMaterial } from '../helpers/servers';
 
@@ -16,6 +16,49 @@ function client(map: Parameters<typeof mapResolver>[0], extra: Partial<Parameter
     const sf = createSafeFetch({ resolver: r.resolver, isBlocked: testIsBlocked, ports: [80, 443, h.port], ...extra });
     return { ...sf, calls: r.calls };
 }
+
+describe('port rule follows proxy mode (setJobPortRule)', () => {
+    // No `ports` seam here: these clients use the production port rule.
+    function prodPorts(map: Parameters<typeof mapResolver>[0]) {
+        return createSafeFetch({ resolver: mapResolver(map).resolver, isBlocked: testIsBlocked });
+    }
+    afterEach(() => setJobPortRule(false));
+
+    it('proxy mode off (default): a job may use any port, as in 700.0.36', async () => {
+        const c = prodPorts({ 'public.test': ['127.0.0.1'] });
+        expect(h.port === 80 || h.port === 443).toBe(false);
+        const res = await c.fetch(`http://public.test:${h.port}/close`);
+        expect(res.status).toBe(200);
+        await res.text();
+        await c.close();
+    });
+
+    it('proxy mode off: private destinations are still refused on any port', async () => {
+        const c = prodPorts({ 'private.test': ['10.0.0.1'], 'public.test': ['127.0.0.1'] });
+        for (const [u, reason] of [
+            [`http://private.test:${h.port}/`, 'blocked_address'],
+            [`http://localhost:${h.port}/`, 'blocked_host'],
+            ['http://169.254.169.254:8080/', 'blocked_address'],
+            [`http://public.test:${h.port}/redirect?to=${encodeURIComponent('http://10.0.0.1:8443/')}`, 'blocked_address'],
+        ] as const) {
+            const err = await rejectionOf(c.fetch(u));
+            expect(err, u).toBeInstanceOf(DestinationBlockedError);
+            expect(err.reason, u).toBe(reason);
+        }
+        await c.close();
+    });
+
+    it('proxy mode on: only 80/443, other ports get blocked_port', async () => {
+        setJobPortRule(true);
+        const c = prodPorts({ 'public.test': ['127.0.0.1'] });
+        const before = h.seen.length;
+        const err = await rejectionOf(c.fetch(`http://public.test:${h.port}/close`));
+        expect(err.reason).toBe('blocked_port');
+        expect(isEgressBlocked(err)).toBe(true);
+        expect(h.seen.length).toBe(before);
+        await c.close();
+    });
+});
 
 describe('1.2-T1 connection goes only to the checked address (DNS rebinding)', () => {
     it('one resolution per connection; second connection resolving private is refused', async () => {
