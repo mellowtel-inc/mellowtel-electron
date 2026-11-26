@@ -1,5 +1,6 @@
 import type { BrowserWindow } from 'electron';
 import { Logger } from '../logger/logger';
+import { describeEncoding, gzipBody } from './gzip-body';
 
 /**
  * Captures `fetch`, `XMLHttpRequest`, and `WebSocket` traffic made by a
@@ -40,6 +41,8 @@ export interface MeucciConfig {
     include_urls: string[];
     exclude_urls: string[];
     max_capture_bytes: number;
+    /** The job's `gzipResponse` flag. Gzip capture bodies of 1 KiB or more. */
+    gzip_response: boolean;
 }
 
 export interface MeucciHandle {
@@ -124,9 +127,14 @@ export function globMatches(url: string, patterns: string[]): boolean {
 /**
  * Parses a job's `burkeObject` field into a MeucciConfig, or null when
  * capture wasn't requested (absent/empty/invalid) or is missing the one
- * required field (`endpoint`).
+ * required field (`endpoint`). `gzipResponse` is the job-level flag, not a
+ * burkeObject field, so the job controls both sinks with one switch.
  */
-export function parseBurkeObject(raw: string | undefined, recordID: string): MeucciConfig | null {
+export function parseBurkeObject(
+    raw: string | undefined,
+    recordID: string,
+    gzipResponse: boolean = false,
+): MeucciConfig | null {
     if (!raw || raw === '{}' || raw === 'null') {
         return null;
     }
@@ -161,7 +169,8 @@ export function parseBurkeObject(raw: string | undefined, recordID: string): Meu
 
     Logger.log(
         `[Meucci] enabled for ${recordID} -> ${endpoint} ` +
-        `include=${JSON.stringify(include)} exclude=${JSON.stringify(exclude)} maxBytes=${maxBytes}`
+        `include=${JSON.stringify(include)} exclude=${JSON.stringify(exclude)} maxBytes=${maxBytes} ` +
+        `gzip=${gzipResponse}`
     );
 
     return {
@@ -170,6 +179,7 @@ export function parseBurkeObject(raw: string | undefined, recordID: string): Meu
         include_urls: include,
         exclude_urls: exclude,
         max_capture_bytes: maxBytes,
+        gzip_response: gzipResponse,
     };
 }
 
@@ -1194,21 +1204,23 @@ export async function collectAndSendCaptures(
             Logger.error(`[Meucci] capture ${capture?.id} is not serializable, dropping: ${e}`);
             continue;
         }
+        const encoded = await gzipBody(body, 'application/json', config.gzip_response);
         // Measure the actual request size, not the string length: JSON escaping
         // and multi-byte characters both inflate it past what `length` reports,
-        // and the sink has a hard request-size cap.
-        const bodyBytes = Buffer.byteLength(body, 'utf8');
-        if (bodyBytes > SINK_REQUEST_LIMIT_BYTES) {
+        // and the sink has a hard request-size cap. When gzipped, the wire size
+        // is the compressed size.
+        if (encoded.sentBytes > SINK_REQUEST_LIMIT_BYTES) {
             Logger.error(
-                `[Meucci] capture ${capture?.id} is ${bodyBytes} bytes, over the sink's ` +
+                `[Meucci] capture ${capture?.id} is ${encoded.sentBytes} bytes on the wire ` +
+                `(${encoded.rawBytes} uncompressed), over the sink's ` +
                 `${SINK_REQUEST_LIMIT_BYTES}-byte request cap; sending anyway, expect a rejection`
             );
         }
         try {
             const response = await fetch(config.api_endpoint, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body,
+                headers: encoded.headers,
+                body: encoded.body,
             });
             if (!response.ok) {
                 Logger.error(
@@ -1217,7 +1229,10 @@ export async function collectAndSendCaptures(
                 );
             } else {
                 sent++;
-                Logger.log(`[Meucci] sent capture ${capture?.id} (${body.length} bytes) -> ${response.status}`);
+                Logger.log(
+                    `[Meucci] sent capture ${capture?.id} (${describeEncoding(encoded, config.gzip_response)}) ` +
+                    `-> ${response.status}`
+                );
             }
         } catch (e) {
             Logger.error(`[Meucci] failed to send capture ${capture?.id} for ${config.burke_id}: ${e}`);
