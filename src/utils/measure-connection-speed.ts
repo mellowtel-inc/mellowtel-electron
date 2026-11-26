@@ -107,6 +107,9 @@ function recordAttempt(): void {
   }
 }
 
+/// Shortest post-warmup window worth measuring; shorter ones measure from the first byte instead.
+const MIN_WINDOW_MS = 250;
+
 let inFlight: Promise<number> | null = null;
 let activeCancel: (() => void) | null = null;
 
@@ -191,6 +194,8 @@ function runSpeedTest(): Promise<number> {
     let bytesTotal = 0;
     let bytesAtWarmup = 0;
     let windowStart = 0;
+    let firstByteAt = 0;
+    let firstChunkBytes = 0;
     let streamsEnded = 0;
 
     const cleanup = () => {
@@ -216,14 +221,20 @@ function runSpeedTest(): Promise<number> {
       resolve(mbps);
     };
 
-    /// Resolves with whatever has been measured so far, or the fallback if the
-    /// warmup window never elapsed.
+    /// Resolves with whatever has been measured so far, or the fallback if
+    /// nothing arrived.
     const finish = () => {
       if (settled) {
         return;
       }
-      const measuredBytes = bytesTotal - bytesAtWarmup;
-      const elapsedSec = windowStart > 0 ? (Date.now() - windowStart) / 1000 : 0;
+      /// A fast link can reach SPEED_TEST_MAX_BYTES during the warmup or just
+      /// after it, leaving no usable window. Measure from the first byte then,
+      /// instead of reporting 0: that reading includes slow start, so it errs low.
+      const now = Date.now();
+      const useWindow = windowStart > 0 && now - windowStart >= MIN_WINDOW_MS;
+      const measuredBytes = useWindow ? bytesTotal - bytesAtWarmup : bytesTotal - firstChunkBytes;
+      const from = useWindow ? windowStart : firstByteAt;
+      const elapsedSec = from > 0 ? (now - from) / 1000 : 0;
       if (elapsedSec <= 0 || measuredBytes <= 0) {
         settle(SPEED_TEST_FALLBACK);
         return;
@@ -268,6 +279,11 @@ function runSpeedTest(): Promise<number> {
             return;
           }
           response.on("data", (chunk: Buffer) => {
+            if (firstByteAt === 0) {
+              /// The first chunk marks time zero, so it is not counted as throughput.
+              firstByteAt = Date.now();
+              firstChunkBytes = chunk.length;
+            }
             bytesTotal += chunk.length;
             if (bytesTotal >= SPEED_TEST_MAX_BYTES) {
               finish();
