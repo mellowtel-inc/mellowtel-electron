@@ -1204,17 +1204,18 @@ export async function collectAndSendCaptures(
             Logger.error(`[Meucci] capture ${capture?.id} is not serializable, dropping: ${e}`);
             continue;
         }
+        const encoded = await gzipBody(body, 'application/json', config.gzip_response);
         // Measure the actual request size, not the string length: JSON escaping
         // and multi-byte characters both inflate it past what `length` reports,
-        // and the sink has a hard request-size cap.
-        const bodyBytes = Buffer.byteLength(body, 'utf8');
-        if (bodyBytes > SINK_REQUEST_LIMIT_BYTES) {
+        // and the sink has a hard request-size cap. When gzipped, the wire size
+        // is the compressed size.
+        if (encoded.sentBytes > SINK_REQUEST_LIMIT_BYTES) {
             Logger.error(
-                `[Meucci] capture ${capture?.id} is ${bodyBytes} bytes, over the sink's ` +
+                `[Meucci] capture ${capture?.id} is ${encoded.sentBytes} bytes on the wire ` +
+                `(${encoded.rawBytes} uncompressed), over the sink's ` +
                 `${SINK_REQUEST_LIMIT_BYTES}-byte request cap; sending anyway, expect a rejection`
             );
         }
-        const encoded = await gzipBody(body, 'application/json', config.gzip_response);
         try {
             const response = await fetch(config.api_endpoint, {
                 method: 'POST',

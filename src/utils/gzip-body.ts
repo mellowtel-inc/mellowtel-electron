@@ -1,6 +1,8 @@
 import { promisify } from "node:util";
 import { gzip } from "node:zlib";
 
+import { Logger } from "../logger/logger";
+
 const gzipAsync = promisify(gzip);
 
 /** Bodies shorter than this stay plain: gzip would barely shrink them. */
@@ -35,10 +37,25 @@ export interface GzipBodyResult {
  */
 export async function gzipBody(json: string, contentType: string, enabled: boolean): Promise<GzipBodyResult> {
   const rawBytes = Buffer.byteLength(json);
+  const plain = (): GzipBodyResult => ({
+    body: json,
+    headers: { "Content-Type": contentType },
+    gzipped: false,
+    rawBytes,
+    sentBytes: rawBytes,
+  });
   if (!enabled || rawBytes < MIN_GZIP_BYTES) {
-    return { body: json, headers: { "Content-Type": contentType }, gzipped: false, rawBytes, sentBytes: rawBytes };
+    return plain();
   }
-  const packed = await gzipAsync(json, { level: GZIP_LEVEL });
+  let packed: Buffer;
+  try {
+    packed = await gzipAsync(json, { level: GZIP_LEVEL });
+  } catch (e) {
+    // Compression only saves bandwidth. Losing the result over it would be worse than
+    // sending it plain, which every endpoint accepts.
+    Logger.error(`[gzipBody] gzip failed, sending ${rawBytes} bytes plain: ${e}`);
+    return plain();
+  }
   // Copy into a fresh ArrayBuffer. Node's Buffer is a Uint8Array over ArrayBufferLike,
   // which Electron's fetch BodyInit does not accept.
   const bytes = new Uint8Array(packed.byteLength);
